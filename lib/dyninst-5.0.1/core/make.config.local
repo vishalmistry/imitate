@@ -1,0 +1,35 @@
+# local definitions
+
+#TCL/TK is required for all Paradyn builds, but not DyninstAPI
+#TCLTK_DIR       = /usr
+#TCLTK_LIB_DIR   = $(TCLTK_DIR)/lib
+#TCLTK_INC_DIR   = $(TCLTK_DIR)/include
+
+#Libelf is required by Linux/x86 and Linux/ia64
+LIBELFDIR       = /usr
+LIBELF_LIB      = $(LIBELFDIR)/lib
+LIBELF_INC      = $(LIBELFDIR)/include/libelf
+
+#Libdwarf is required by Linux/x86 and Linux/ia64
+LIBDWARFDIR     = /usr
+LIBDWARF_LIB    = $(LIBDWARFDIR)/lib
+LIBDWARF_INC    = $(LIBDWARFDIR)/include/libdwarf
+
+#libunwind is required by Linux/ia64
+#LIBUNWINDDIR    = /usr
+#LIBUNWIND_LIB   = $(LIBUNWINDDIR)/lib
+#LIBUNWIND_INC   = $(LIBUNWINDDIR)/include
+
+#Uncomment the following line to build Paradyn with Tcl/Tk 8.3
+# instead of 8.4
+#USE_TCL83      = true
+
+#Uncomment these lines to force the use static libraries
+#LIBELFSTATIC   = true
+#LIBDWARFSTATIC = true
+#LIBTCLTKSTATIC = true
+
+#nasm is needed for the Linux/x86 dyninst tests
+NASM            = nasm
+
+#FLEX_DIR		= /usr/lib

@@ -1,0 +1,2304 @@
+/*
+ * Copyright (c) 1996-2004 Barton P. Miller
+ * 
+ * We provide the Paradyn Parallel Performance Tools (below
+ * described as "Paradyn") on an AS IS basis, and do not warrant its
+ * validity or performance.  We reserve the right to update, modify,
+ * or discontinue this software at any time.  We shall have no
+ * obligation to supply such updates or modifications or any other
+ * form of support to you.
+ * 
+ * This license is for research uses.  For such uses, there is no
+ * charge. We define "research use" to mean you may freely use it
+ * inside your organization for whatever purposes you see fit. But you
+ * may not re-distribute Paradyn or parts of Paradyn, in any form
+ * source or binary (including derivatives), electronic or otherwise,
+ * to any other organization or entity without our permission.
+ * 
+ * (for other uses, please contact us at paradyn@cs.wisc.edu)
+ * 
+ * All warranties, including without limitation, any warranty of
+ * merchantability or fitness for a particular purpose, are hereby
+ * excluded.
+ * 
+ * By your use of Paradyn, you understand and agree that we (or any
+ * other person or entity with proprietary rights in Paradyn) are
+ * under no obligation to provide either maintenance services,
+ * update services, notices of latent defects, or correction of
+ * defects for Paradyn.
+ * 
+ * Even if advised of the possibility of such damages, under no
+ * circumstances shall we (or any other person or entity with
+ * proprietary rights in the software licensed hereunder) be liable
+ * to you or any third party for direct, indirect, or consequential
+ * damages of any character regardless of type of action, including,
+ * without limitation, loss of profits, loss of use, loss of good
+ * will, or computer failure or malfunction.  You agree to indemnify
+ * us (and any other person or entity with proprietary rights in the
+ * software licensed hereunder) for any and all liability it may
+ * incur to third parties resulting from your use of Paradyn.
+ */
+
+// $Id: BPatch.C,v 1.157.2.1 2006/09/19 16:07:08 legendre Exp $
+
+#include <stdio.h>
+#include <assert.h>
+#include <signal.h>
+
+#define BPATCH_FILE
+#include "common/h/Pair.h"
+#include "common/h/Vector.h"
+#include "signalhandler.h"
+#include "stats.h"
+#include "BPatch.h"
+#include "BPatch_typePrivate.h"
+#include "process.h"
+#include "BPatch_libInfo.h"
+#include "BPatch_collections.h"
+#include "BPatch_thread.h"
+#include "BPatch_asyncEventHandler.h"
+#include "callbacks.h"
+#include "common/h/timing.h"
+#include "showerror.h"
+#include "signalgenerator.h"
+
+#if defined(i386_unknown_nt4_0) || defined(mips_unknown_ce2_11) //ccw 20 july 2000 : 28 mar 2001
+#include "nt_signal_emul.h"
+#endif
+
+extern void loadNativeDemangler();
+
+BPatch *BPatch::bpatch = NULL;
+
+//  global stat vars defined in stats.C
+extern unsigned int trampBytes;
+extern unsigned int pointsUsed;
+extern unsigned int insnGenerated;
+extern unsigned int totalMiniTramps;
+extern unsigned int ptraceOtherOps;
+extern unsigned int ptraceOps;
+extern unsigned int ptraceBytes;
+
+extern BPatch_asyncEventHandler *global_async_event_handler;
+void defaultErrorFunc(BPatchErrorLevel level, int num, const char * const *params);
+
+extern void dyninst_yield();
+
+/*
+ * BPatch::BPatch
+ *
+ * Constructor for BPatch.  Performs one-time initialization needed by the
+ * library.
+ */
+BPatch::BPatch()
+  : info(NULL),
+    typeCheckOn(true),
+    lastError(0),
+    debugParseOn(true),
+    baseTrampDeletionOn(false),
+    trampRecursiveOn(false),
+    forceRelocation_NP(false),
+    autoRelocation_NP(true),
+    disregardLiveness_NP_(false),
+    trampMergeOn(false),
+    saveFloatingPointsOn(true),
+    asyncActive(false),
+    delayedParsing_(false),
+    systemPrelinkCommand(NULL),
+    mutateeStatusChange(false),
+    waitingForStatusChange(false),
+    notificationFDOutput_(-1),
+    notificationFDInput_(-1),
+    FDneedsPolling_(false),
+    builtInTypes(NULL),
+    stdTypes(NULL),
+    type_Error(NULL),
+    type_Untyped(NULL)
+{
+    if (!global_mutex) {
+      global_mutex = new eventLock();
+      extern bool mutex_created;
+      mutex_created = true;
+    }
+
+    global_mutex->_Lock(FILE__, __LINE__);
+    init_debug();
+
+    memset(&stats, 0, sizeof(BPatch_stats));
+    extern bool init();
+
+    // Save a pointer to the one-and-only bpatch object.
+    if (bpatch == NULL){
+       bpatch = this;
+    }
+    
+    initDefaultPointFrequencyTable();
+    BPatch::bpatch->registerErrorCallback(defaultErrorFunc);
+    bpinfo("installed default error reporting function");
+    initCyclesPerSecond();
+    
+    /*
+     * Create the list of processes.
+     */
+    info = new BPatch_libInfo();
+
+    /*
+     * Create the "error" and "untyped" types.
+     */
+    type_Error   = BPatch_type::createFake("<error>");
+    type_Untyped = BPatch_type::createFake("<no type>");
+
+    /*
+     * Initialize hash table of standard types.
+     */
+    BPatch_type *newType;
+    stdTypes = BPatch_typeCollection::getGlobalTypeCollection();
+    stdTypes->addType(newType = new BPatch_typeScalar(-1, sizeof(int), "int"));
+    newType->decrRefCount();
+    BPatch_type *charType = new BPatch_typeScalar(-2, sizeof(char), "char");
+    stdTypes->addType(charType);
+    stdTypes->addType(newType = new BPatch_typePointer(-3, charType, "char *"));
+    charType->decrRefCount();
+    newType->decrRefCount();
+    BPatch_type *voidType = new BPatch_typeScalar(-11, 0, "void");
+    stdTypes->addType(voidType);
+    stdTypes->addType(newType = new BPatch_typePointer(-4, voidType, "void *"));
+    voidType->decrRefCount();
+    newType->decrRefCount();
+    stdTypes->addType(newType = new BPatch_typeScalar(-12, sizeof(float), "float"));
+    newType->decrRefCount();
+#if defined(i386_unknown_nt4_0)
+    stdTypes->addType(newType = new BPatch_typeScalar(-31, sizeof(LONGLONG), "long long"));    
+#else
+    stdTypes->addType(newType = new BPatch_typeScalar(-31, sizeof(long long), "long long"));
+#endif
+    newType->decrRefCount();
+
+    /*
+     * Initialize hash table of API types.
+     */
+    APITypes = BPatch_typeCollection::getGlobalTypeCollection();
+
+    /*
+     *  Initialize hash table of Built-in types.
+     *  Negative type numbers defined in the gdb stab-docs
+     */
+     
+    builtInTypes = new BPatch_builtInTypeCollection;
+    
+    // NOTE: integral type  mean twos-complement
+    // -1  int, 32 bit signed integral type
+    // in stab document, size specified in bits, system size is in bytes
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-1, 4, "int"));
+    newType->decrRefCount();
+    // -2  char, 8 bit type holding a character. GDB & dbx(AIX) treat as signed
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-2, 1, "char"));
+    newType->decrRefCount();
+    // -3  short, 16 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-3, 2, "short"));
+    newType->decrRefCount();
+    // -4  long, 32/64 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-4, sizeof(long), "long"));
+    newType->decrRefCount();
+    // -5  unsigned char, 8 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-5, 1, "unsigned char"));
+    newType->decrRefCount();
+    // -6  signed char, 8 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-6, 1, "signed char"));
+    newType->decrRefCount();
+    // -7  unsigned short, 16 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-7, 2, "unsigned short"));
+    newType->decrRefCount();
+    // -8  unsigned int, 32 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-8, 4, "unsigned int"));
+    newType->decrRefCount();
+    // -9  unsigned, 32 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-9, 4, "unsigned"));
+    newType->decrRefCount();
+    // -10 unsigned long, 32 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-10, sizeof(unsigned long), "unsigned long"));
+    newType->decrRefCount();
+    // -11 void, type indicating the lack of a value
+    //  XXX-size may not be correct jdd 4/22/99
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-11, 0, "void"));
+    newType->decrRefCount();
+    // -12 float, IEEE single precision
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-12, sizeof(float), "float"));
+    newType->decrRefCount();
+    // -13 double, IEEE double precision
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-13, sizeof(double), "double"));
+    newType->decrRefCount();
+    // -14 long double, IEEE double precision, size may increase in future
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-14, sizeof(long double), "long double"));
+    newType->decrRefCount();
+    // -15 integer, 32 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-15, 4, "integer"));
+    newType->decrRefCount();
+    // -16 boolean, 32 bit type. GDB/GCC 0=False, 1=True, all other values
+    //     have unspecified meaning
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-16, sizeof(bool), "boolean"));
+    newType->decrRefCount();
+    // -17 short real, IEEE single precision
+    //  XXX-size may not be correct jdd 4/22/99
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-17, sizeof(float), "short real"));
+    newType->decrRefCount();
+    // -18 real, IEEE double precision XXX-size may not be correct jdd 4/22/99 
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-18, sizeof(double), "real"));
+    newType->decrRefCount();
+    // -19 stringptr XXX- size of void * -- jdd 4/22/99
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-19, sizeof(void *), "stringptr"));
+    newType->decrRefCount();
+    // -20 character, 8 bit unsigned character type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-20, 1, "character"));
+    newType->decrRefCount();
+    // -21 logical*1, 8 bit type (Fortran, used for boolean or unsigned int)
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-21, 1, "logical*1"));
+    newType->decrRefCount();
+    // -22 logical*2, 16 bit type (Fortran, some for boolean or unsigned int)
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-22, 2, "logical*2"));
+    newType->decrRefCount();
+    // -23 logical*4, 32 bit type (Fortran, some for boolean or unsigned int)
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-23, 4, "logical*4"));
+    newType->decrRefCount();
+    // -24 logical, 32 bit type (Fortran, some for boolean or unsigned int)
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-24, 4, "logical"));
+    newType->decrRefCount();
+    // -25 complex, consists of 2 IEEE single-precision floating point values
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-25, sizeof(float)*2, "complex"));
+    newType->decrRefCount();
+    // -26 complex, consists of 2 IEEE double-precision floating point values
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-26, sizeof(double)*2, "complex*16"));
+    newType->decrRefCount();
+    // -27 integer*1, 8 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-27, 1, "integer*1"));
+    newType->decrRefCount();
+    // -28 integer*2, 16 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-28, 2, "integer*2"));
+    newType->decrRefCount();
+
+/* Quick hack to make integer*4 compatible with int for Fortran
+   jnb 6/20/01 */
+
+    // This seems questionable - let's try removing that hack - jmo 05/21/04
+    /*
+    builtInTypes->addBuiltInType(newType = new BPatch_type("int",-29,
+                                                 BPatch_built_inType, 4));
+    newType->decrRefCount();
+    */
+    // -29 integer*4, 32 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-29, 4, "integer*4"));
+    newType->decrRefCount();
+    // -30 wchar, Wide character, 16 bits wide, unsigned (unknown format)
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-30, 2, "wchar"));
+    newType->decrRefCount();
+#if defined(os_windows)
+    // -31 long long, 64 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-31, sizeof(LONGLONG), "long long"));
+    newType->decrRefCount();
+    // -32 unsigned long long, 64 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-32, sizeof(ULONGLONG), "unsigned long long"));
+    newType->decrRefCount();
+#else
+    // -31 long long, 64 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-31, sizeof(long long), "long long"));
+    newType->decrRefCount();
+    // -32 unsigned long long, 64 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-32, sizeof(unsigned long long), "unsigned long long"));
+    newType->decrRefCount();
+#endif
+    // -33 logical*8, 64 bit unsigned integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-33, 8, "logical*8"));
+    newType->decrRefCount();
+    // -34 integer*8, 64 bit signed integral type
+    builtInTypes->addBuiltInType(newType = new BPatch_typeScalar(-34, 8, "integer*8"));
+    newType->decrRefCount();
+
+    loadNativeDemangler();
+
+    global_async_event_handler = new BPatch_asyncEventHandler();
+#if defined(cap_async_events)
+    if (!global_async_event_handler->initialize()) {
+      //  not much else we can do in the ctor, except complain (should we abort?)
+      bperr("%s[%d]:  failed to initialize asyncEventHandler, possibly fatal\n",
+            __FILE__, __LINE__);
+    }
+#endif
+    global_mutex->_Unlock(FILE__, __LINE__);
+}
+
+
+/*
+ * BPatch::~BPatch
+ *
+ * Destructor for BPatch.  Free allocated memory.
+ */
+void BPatch::BPatch_dtor()
+{
+    delete info;
+
+    type_Error->decrRefCount();
+    type_Untyped->decrRefCount();
+
+    if (stdTypes)
+        BPatch_typeCollection::freeTypeCollection(stdTypes);
+    if (APITypes)
+        BPatch_typeCollection::freeTypeCollection(APITypes);
+
+
+    if(systemPrelinkCommand){
+        delete [] systemPrelinkCommand;
+    }
+    bpatch = NULL;
+}
+
+char * BPatch::getPrelinkCommandInt(){
+	return systemPrelinkCommand;
+}
+
+void BPatch::setPrelinkCommandInt(char *command){
+
+	if(systemPrelinkCommand){
+		delete [] systemPrelinkCommand;
+	}
+	systemPrelinkCommand = new char[strlen(command)+1];
+	memcpy(systemPrelinkCommand, command, strlen(command)+1);
+}
+
+bool BPatch::isTypeCheckedInt()
+{
+  return typeCheckOn;
+}
+void BPatch::setTypeCheckingInt(bool x)
+{
+  typeCheckOn = x;
+}
+bool BPatch::parseDebugInfoInt()
+{
+  return debugParseOn;
+}
+bool BPatch::delayedParsingOnInt()
+{
+  return delayedParsing_;
+}
+void BPatch::setDebugParsingInt(bool x)
+{
+  debugParseOn = x;
+}
+bool BPatch::baseTrampDeletionInt()
+{
+  return baseTrampDeletionOn;
+}
+void BPatch::setBaseTrampDeletionInt(bool x)
+{
+  baseTrampDeletionOn = x;
+}
+bool BPatch::isTrampRecursiveInt()
+{
+  return trampRecursiveOn;
+}
+void BPatch::setTrampRecursiveInt(bool x)
+{
+  trampRecursiveOn = x;
+}
+bool BPatch::disregardLiveness_NPInt() { return disregardLiveness_NP_; }
+void BPatch::setDisregardLiveness_NPInt(bool x) { disregardLiveness_NP_ = x; }
+bool BPatch::hasForcedRelocation_NPInt()
+{
+  return forceRelocation_NP;
+}
+void BPatch::setForcedRelocation_NPInt(bool x)
+{
+  forceRelocation_NP = x;
+}
+bool BPatch::autoRelocationOnInt()
+{
+  return autoRelocation_NP;
+}
+void BPatch::setAutoRelocation_NPInt(bool x)
+{
+  autoRelocation_NP = x;
+}
+void BPatch::setDelayedParsingInt(bool x)
+{
+  delayedParsing_ = x;
+}
+bool BPatch::isMergeTrampInt()
+{
+  return trampMergeOn;
+}
+void BPatch::setMergeTrampInt(bool x)
+{
+  trampMergeOn = x; 
+}
+bool BPatch::isSaveFPROnInt()
+{
+  return saveFloatingPointsOn;
+}
+void BPatch::setSaveFPRInt(bool x)
+{
+  saveFloatingPointsOn = x;
+}
+
+
+
+
+/*
+ * BPatch::registerErrorCallbackInt
+ *
+ * Registers a function that is to be called by the library when an error
+ * occurs or when there is status to report.  Returns the address of the
+ * previously registered error callback function.
+ *
+ * function	The function to be called.
+ */
+
+
+BPatchErrorCallback BPatch::registerErrorCallbackInt(BPatchErrorCallback function)
+{
+    BPatchErrorCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtError, cbs);
+
+    if (cbs.size()) {
+      mailbox_printf("%s[%d]:  removed %d error cbs\n", FILE__, __LINE__, cbs.size());
+      ErrorCallback *ercb = (ErrorCallback *) cbs[0];
+      ret = ercb->getFunc();
+    }
+
+    if (function != 0) {
+	ErrorCallback *cb = new ErrorCallback(function);
+	getCBManager()->registerCallback(evtError, cb);
+    }
+    // If function is zero, we treat it as a remove-callback request
+
+    return ret;
+}
+
+
+/*
+ * BPatch::registerPostForkCallback
+ *
+ * Registers a function that is to be called by the library when a new
+ * process has been forked off by an mutatee process.
+ *
+ * function	The function to be called.
+ */
+BPatchForkCallback BPatch::registerPostForkCallbackInt(BPatchForkCallback func)
+{
+#if defined(i386_unknown_nt4_0) 
+  reportError(BPatchWarning, 0,
+	      "postfork callbacks not implemented on this platform\n");
+  return NULL;
+#else
+    BPatchForkCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtPostFork, cbs);
+
+    if (cbs.size()) {
+      ForkCallback *fcb = (ForkCallback *) cbs[0];
+      ret =  fcb->getFunc();
+    }
+
+    if (func != 0) {
+	ForkCallback *cb = new ForkCallback(func);
+	getCBManager()->registerCallback(evtPostFork, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    return ret;
+#endif
+}
+
+/*
+ * BPatch::registerPreForkCallback
+ *
+ * Registers a function that is to be called by the library when a process
+ * is about to fork a new process
+ *
+ * function	The function to be called.
+ */
+BPatchForkCallback BPatch::registerPreForkCallbackInt(BPatchForkCallback func)
+{
+#if defined(i386_unknown_nt4_0)
+    reportError(BPatchWarning, 0,
+	"prefork callbacks not implemented on this platform\n");
+    return NULL;
+#else
+    BPatchForkCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtPreFork, cbs);
+
+    if (cbs.size()) {
+      ForkCallback *fcb = (ForkCallback *) cbs[0];
+      ret =  fcb->getFunc();
+    }
+
+    if (func != 0) {
+	ForkCallback *cb = new ForkCallback(func);
+	getCBManager()->registerCallback(evtPreFork, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+	
+    return ret;
+#endif
+}
+
+/*
+ * BPatch::registerExecCallback
+ *
+ * Registers a function that is to be called by the library when a 
+ * process has just completed an exec* call
+ *
+ * func	The function to be called.
+ */
+BPatchExecCallback BPatch::registerExecCallbackInt(BPatchExecCallback func)
+{
+
+#if defined(i386_unknown_nt4_0) 
+    reportError(BPatchWarning, 0,
+	"exec callbacks not implemented on this platform\n");
+    return NULL;
+#else
+    BPatchExecCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtExec, cbs);
+    if (cbs.size()) {
+      ExecCallback *fcb = (ExecCallback *) cbs[0];
+      ret =  fcb->getFunc();
+    }
+
+    if (func != 0) {
+	ExecCallback *cb = new ExecCallback(func);
+	getCBManager()->registerCallback(evtExec, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    return ret;
+
+#endif
+}
+
+/*
+ * BPatch::registerExitCallback
+ *
+ * Registers a function that is to be called by the library when a 
+ * process has just called the exit system call
+ *
+ * func	The function to be called.
+ */
+BPatchExitCallback BPatch::registerExitCallbackInt(BPatchExitCallback func)
+{
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtProcessExit, cbs);
+
+    BPatchExitCallback ret = NULL;
+    if (cbs.size()) {
+	ExitCallback *fcb = (ExitCallback *) cbs[0];
+	ret =  fcb->getFunc();
+    }
+
+    if (func != 0) {
+	ExitCallback *cb = new ExitCallback(func);
+	getCBManager()->registerCallback(evtProcessExit, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    return ret;
+}
+
+/*
+ * BPatch::registerOneTimeCodeCallback
+ *
+ * Registers a function that is to be called by the library when a 
+ * oneTimeCode (inferior RPC) is completed.
+ *
+ * func	The function to be called.
+ */
+BPatchOneTimeCodeCallback BPatch::registerOneTimeCodeCallbackInt(BPatchOneTimeCodeCallback func)
+{
+    BPatchOneTimeCodeCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtOneTimeCode, cbs);
+    if (cbs.size()) {
+      OneTimeCodeCallback *fcb = (OneTimeCodeCallback *) cbs[0];
+      ret =  fcb->getFunc();
+    }
+
+    if (func != 0) {
+	OneTimeCodeCallback *cb = new OneTimeCodeCallback(func);
+	getCBManager()->registerCallback(evtOneTimeCode, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    return ret;
+}
+
+
+/*
+ * BPatch::registerDynLibraryCallback
+ *
+ * Registers a function that is to be called by the library when a dynamically
+ * loaded library is loaded or unloaded by a process under the API's control.
+ * Returns the address of the previously registered callback function.
+ *
+ * function	The function to be called.
+ */
+BPatchDynLibraryCallback
+BPatch::registerDynLibraryCallbackInt(BPatchDynLibraryCallback function)
+{
+
+    BPatchDynLibraryCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtLoadLibrary, cbs);
+    if (cbs.size()) {
+      DynLibraryCallback *fcb = (DynLibraryCallback *) cbs[0];
+      ret =  fcb->getFunc();
+    }
+
+    if (function != 0) {
+	DynLibraryCallback *cb = new DynLibraryCallback(function);
+	getCBManager()->registerCallback(evtLoadLibrary, cb);
+    }
+    // If function is zero, we assume it is a remove-callback request
+
+    return ret;
+}
+
+
+/*
+ * BPatch::getEnglishErrorString
+ *
+ * Returns the descriptive error string for the passed error number.
+ *
+ * number	The number that identifies the error.
+ */
+const char *BPatch::getEnglishErrorString(int /* number */)
+{
+    return "%s";
+}
+
+
+/*
+ * BPatch::reportError
+ *
+ * Report an error using the callback mechanism.
+ *
+ * severity	The severity level of the error.
+ * number	Identifies the error.
+ * str		A string to pass as the first element of the list of strings
+ *		given to the callback function.
+ */
+void BPatch::reportError(BPatchErrorLevel severity, int number, const char *str)
+{
+    assert(bpatch != NULL);
+    assert(global_mutex);
+    assert(global_mutex->depth());
+    // don't log BPatchWarning or BPatchInfo messages as "errors"
+    if ((severity == BPatchFatal) || (severity == BPatchSerious))
+        bpatch->lastError = number;
+
+    pdvector<CallbackBase *> cbs;
+    if (! getCBManager()->dispenseCallbacksMatching(evtError, cbs)) {
+        fprintf(stdout, "%s[%d]:  DYNINST ERROR:\n %s\n", FILE__, __LINE__, str);
+        fflush(stdout);
+        return; 
+    }
+    
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        ErrorCallback *cb = dynamic_cast<ErrorCallback *>(cbs[i]);
+        if (cb)
+            (*cb)(severity, number, str); 
+    }
+}
+
+
+/*
+ * BPatch::formatErrorString
+ *
+ * Takes a format string with an error message (obtained from
+ * getEnglishErrorString) and an array of parameters that were passed to an
+ * error callback function, and creates a string with the parameters
+ * substituted into it.
+ *
+ * dst		The address into which the formatted string should be copied.
+ * size		If the formatted string is equal to or longer than this number
+ * 		of characters, then it will be truncated to size-1 characters
+ * 		and terminated with a nul ('\0').
+ * fmt		The format string (returned by a function such as
+ *		getEnglishErrorString).
+ * params	The array of parameters that were passed to an error callback
+ *		function.
+ */
+void BPatch::formatErrorString(char *dst, int size,
+			       const char *fmt, const char * const *params)
+{
+    int cur_param = 0;
+
+    while (size > 1 && *fmt) {
+	if (*fmt == '%') {
+	    if (fmt[1] == '\0') {
+		break;
+	    } else if (fmt[1] == '%') {
+		*dst++ = '%';
+		size--;
+	    } else if (fmt[1] == 's') {
+		char *p = const_cast<char *>(params[cur_param++]);
+		while (size > 1 && *p) {
+		    *dst++ = *p++;
+		    size--;
+		}
+	    } else {
+		// Illegal specifier
+		*dst++ = fmt[0];
+		*dst++ = fmt[1];
+		size -= 2;
+	    }
+    	    fmt += 2;
+	} else {
+	    *dst++ = *fmt++;
+	    size--;
+	}
+    }
+    if (size > 0)
+	*dst = '\0';
+}
+
+static char *lvl_str(BPatchErrorLevel lvl)
+{
+  switch(lvl) {
+    case BPatchFatal: return "--FATAL--";
+    case BPatchSerious: return "--SERIOUS--";
+    case BPatchWarning: return "--WARN--";
+    case BPatchInfo: return "--INFO--";
+  };
+  return "BAD ERR CODE";
+}
+
+void defaultErrorFunc(BPatchErrorLevel level, int num, const char * const *params)
+{
+    char line[256];
+
+    if ((level == BPatchWarning) || (level == BPatchInfo)) {
+         // ignore low level errors/warnings in the default reporter
+         return;
+    }
+
+    const char *msg = BPatch::bpatch->getEnglishErrorString(num);
+    BPatch::bpatch->formatErrorString(line, sizeof(line), msg, params);
+
+    if (num != -1) {
+       fprintf(stderr,"%s #%d: %s\n", lvl_str(level),num, line);
+    }
+}
+
+
+/*
+ * BPatch::getThreadByPid
+ *
+ * Given a process ID, this function returns a pointer to the associated
+ * BPatch_thread object (or NULL if there is none).  Since a process may be
+ * registered provisionally with a thread object pointer of NULL, the boolean
+ * pointed to by the parameter "exists" is set to true if the pid exists in
+ * the table of processes, and false if it does not.
+ *
+ * pid		The pid to look up.
+ * exists	A pointer to a boolean to fill in with true if the pid exists
+ *		in the table and false if it does not.  NULL may be passed in
+ *		if this information is not required.
+ */
+BPatch_process *BPatch::getProcessByPid(int pid, bool *exists)
+{
+    if (info->procsByPid.defines(pid)) {
+        if (exists) *exists = true;
+        BPatch_process *proc = info->procsByPid[pid];
+        return proc;
+    } else {
+        if (exists) *exists = false;
+        return NULL;
+    }
+}
+
+BPatch_thread *BPatch::getThreadByPid(int pid, bool *exists)
+{
+   BPatch_process *p = getProcessByPid(pid, exists);
+   if (!exists)
+      return NULL;
+   assert(p->threads.size() > 0);
+   return p->threads[0];
+}
+
+
+/*
+ * BPatch::getThreads
+ *
+ * Returns a vector of all threads that are currently defined.  Includes
+ * threads created directly using the library and those created with UNIX fork
+ * or Windows NT spawn system calls.  The caller is responsible for deleting
+ * the vector when it is no longer needed.
+ */
+BPatch_Vector<BPatch_thread *> *BPatch::getThreadsInt()
+{
+    BPatch_Vector<BPatch_thread *> *result = new BPatch_Vector<BPatch_thread *>;
+
+    dictionary_hash_iter<int, BPatch_process *> ti(info->procsByPid);
+
+    int pid;
+    BPatch_process *proc;
+
+    while (ti.next(pid, proc))
+    {
+       assert(proc);
+       assert(proc->threads.size() > 0);
+       result->push_back(proc->threads[0]);
+    }
+
+    return result;
+}
+
+/*
+ * BPatch::getProcs
+ *
+ * Returns a vector of all threads that are currently defined.  Includes
+ * threads created directly using the library and those created with UNIX fork
+ * or Windows NT spawn system calls.  The caller is responsible for deleting
+ * the vector when it is no longer needed.
+ */
+BPatch_Vector<BPatch_process *> *BPatch::getProcessesInt()
+{
+   BPatch_Vector<BPatch_process *> *result = new BPatch_Vector<BPatch_process *>;
+   dictionary_hash_iter<int, BPatch_process *> ti(info->procsByPid);
+
+   int pid;
+   BPatch_process *proc;
+   
+   while (ti.next(pid, proc))
+   {
+      assert(proc);
+      result->push_back(proc);
+   }
+   
+   return result;
+}
+
+
+/*
+ * BPatch::registerProvisionalThread
+ *
+ * Register a new process that is not yet associated with a thread.
+ * (this function is called only by createProcess).
+ *
+ * pid		The pid of the process to register.
+ */
+void BPatch::registerProvisionalThread(int pid)
+{
+    assert(!info->procsByPid.defines(pid));
+    info->procsByPid[pid] = NULL;
+}
+
+
+/*
+ * BPatch::registerForkedProcess
+ *
+ * Register a new process that is not yet associated with a thread.
+ * (this function is an upcall when a new process is created).
+ *
+ * parentPid		the pid of the parent process.
+ * childPid		The pid of the process to register.
+ * proc			lower lever handle to process specific stuff
+ *
+ */
+void BPatch::registerForkedProcess(process *parentProc, process *childProc)
+{
+    int parentPid = parentProc->getPid();
+    int childPid = childProc->getPid();
+
+    forkexec_printf("BPatch: registering fork, parent %d, child %d\n",
+                    parentPid, childPid);
+    assert(getProcessByPid(childPid) == NULL);
+    
+    BPatch_process *parent = getProcessByPid(parentPid);
+    assert(parent);
+
+    parent->isVisiblyStopped = true;
+
+    BPatch_process *child = new BPatch_process(childProc);
+
+#if defined(cap_async_events)
+    // We're already attached to the parent... let's see if the
+    // simple way works.
+    if (!getAsync()->mutateeDetach(child)) {
+        bperr("%s[%d]:  asyncEventHandler->mutateeDetach failed\n", __FILE__, __LINE__);
+    }
+    if (!getAsync()->connectToProcess(child)) {
+        bperr("%s[%d]:  asyncEventHandler->connectToProcess failed\n", __FILE__, __LINE__);
+    }
+    else 
+        asyncActive = true;
+#endif
+    forkexec_printf("Successfully connected socket to child\n");
+    
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->dispenseCallbacksMatching(evtPostFork,cbs);
+    
+    
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+
+        ForkCallback *cb = dynamic_cast<ForkCallback *>(cbs[i]);
+        if (cb) {
+            (*cb)(parent->threads[0], child->threads[0]);
+        }
+    }
+
+    parent->isVisiblyStopped = false;
+    child->isVisiblyStopped = false;
+
+    forkexec_printf("BPatch: finished registering fork, parent %d, child %d\n",
+                    parentPid, childPid);
+}
+
+/*
+ * BPatch::registerForkingThread
+ *
+ * Perform whatever processing is necessary when a thread enters
+ * a fork system call. Previously the preForkCallback was made directly.
+ *
+ * forkingPid   pid of the forking process
+ * proc			lower lever handle to process specific stuff
+ *
+ */
+void BPatch::registerForkingProcess(int forkingPid, process * /*proc*/)
+{
+    BPatch_process *forking = getProcessByPid(forkingPid);
+    assert(forking);
+
+    forking->isVisiblyStopped = true;
+
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->dispenseCallbacksMatching(evtPreFork,cbs);
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+
+        assert(cbs[i]);
+        ForkCallback *cb = dynamic_cast<ForkCallback *>(cbs[i]);
+        if (cb)
+            (*cb)(forking->threads[0], NULL);
+    }
+    forking->isVisiblyStopped = false;
+}
+
+
+/*
+ * BPatch::registerExecEntry
+ *
+ * Register a process that has just entered exec
+ *
+ * Gives us some cleanup time
+ */
+
+void BPatch::registerExecEntry(process *p, char *) {
+    BPatch_process *execing = getProcessByPid(p->getPid());
+    assert(execing);
+
+    // tell the async that the process went away
+    getAsync()->cleanupProc(execing);
+}    
+
+/*
+ * BPatch::registerExecExit
+ *
+ * Register a process that has just done an exec call.
+ *
+ * thread	thread that has just performed the exec
+ *
+ */
+
+void BPatch::registerExecExit(process *proc)
+{
+    int execPid = proc->getPid();
+    BPatch_process *process = getProcessByPid(execPid);
+    assert(process);
+   // build a new BPatch_image for this one
+   if (process->image)
+       delete process->image;
+   process->image = new BPatch_image(process);
+
+   // The async pipe should be gone... handled in registerExecEntry
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->dispenseCallbacksMatching(evtExec,cbs);
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+
+        ExecCallback *cb = dynamic_cast<ExecCallback *>(cbs[i]);
+        if (cb)
+            (*cb)(process->threads[0]);
+    }
+
+}
+
+void BPatch::registerNormalExit(process *proc, int exitcode)
+{
+   if (!proc)
+      return;
+
+   int pid = proc->getPid();
+
+   BPatch_process *process = getProcessByPid(pid);
+
+   if (!process) return;
+
+   bool wasProcessStopped = process->isVisiblyStopped;
+
+   process->isVisiblyStopped = true;
+   process->terminated = true;
+
+
+   BPatch_thread *thrd = process->getThreadByIndex(0);
+
+   process->setExitCode(exitcode);
+   process->setExitedNormally();
+   process->setUnreportedTermination(true);
+
+   pdvector<CallbackBase *> cbs;
+
+   if (thrd) 
+   {
+      getCBManager()->dispenseCallbacksMatching(evtThreadExit,cbs);
+      for (unsigned int i = 0; i < cbs.size(); ++i) {
+         signalNotificationFD();
+         AsyncThreadEventCallback *cb = dynamic_cast<AsyncThreadEventCallback *>(cbs[i]);
+         if (cb)
+            (*cb)(process, thrd);
+      }
+   }
+
+   cbs.clear();
+   getCBManager()->dispenseCallbacksMatching(evtProcessExit,cbs);
+   for (unsigned int i = 0; i < cbs.size(); ++i) {
+       signalNotificationFD();
+       ExitCallback *cb = dynamic_cast<ExitCallback *>(cbs[i]);
+       if (cb) {
+           signal_printf("%s[%d]:  about to register/wait for exit callback\n", FILE__, __LINE__);
+           (*cb)(process->threads[0], ExitedNormally);
+           signal_printf("%s[%d]:  exit callback done\n", FILE__, __LINE__);
+       }
+#if defined(IBM_BPATCH_COMPAT)
+       // A different (compatibility) callback type. 
+       DPCLThreadEventCallback *tcb = dynamic_cast<DPCLThreadEventCallback *>(cbs[i]);
+       if (tcb) {
+           signal_printf("%s[%d]:  about to register/wait for exit callback\n", FILE__, __LINE__);
+           (*tcb)(process->threads[0], NULL, NULL);
+           signal_printf("%s[%d]:  exit callback done\n", FILE__, __LINE__);
+       }
+       // A different (compatibility) callback type. 
+       DPCLProcessEventCallback *pcb = dynamic_cast<DPCLProcessEventCallback *>(cbs[i]);
+       if (pcb) {
+           signal_printf("%s[%d]:  about to register/wait for exit callback\n", FILE__, __LINE__);
+           (*pcb)(process, NULL, NULL);
+           signal_printf("%s[%d]:  exit callback done\n", FILE__, __LINE__);
+       }
+#endif           
+   }
+
+
+   // We now run the process out; set its state to terminated. Really, the user shouldn't
+   // try to do anything else with this, but we can get that happening.
+   BPatch_process *stillAround = getProcessByPid(pid);
+   if (stillAround)
+       stillAround->terminated = true;
+}
+
+void BPatch::registerSignalExit(process *proc, int signalnum)
+{
+   if (!proc)
+      return;
+
+   int pid = proc->getPid();
+
+   BPatch_process *bpprocess = getProcessByPid(pid);
+   if (!bpprocess) {
+       // Error during startup can cause this -- we have a partially
+       // constructed process object, but it was never registered with
+       // bpatch
+       return;
+   }
+   BPatch_thread *thrd = bpprocess->getThreadByIndex(0);
+
+   bpprocess->setExitedViaSignal(signalnum);
+   bpprocess->setUnreportedTermination(true);
+   bpprocess->isVisiblyStopped = true;
+   bpprocess->terminated = true;
+
+   pdvector<CallbackBase *> cbs;
+   if (thrd) 
+   {
+      getCBManager()->dispenseCallbacksMatching(evtThreadExit,cbs);
+      for (unsigned int i = 0; i < cbs.size(); ++i) {
+         signalNotificationFD();
+         
+         AsyncThreadEventCallback *cb = dynamic_cast<AsyncThreadEventCallback *>(cbs[i]);
+         if (cb) 
+            (*cb)(bpprocess, thrd);
+      }
+   }
+   
+   cbs.clear();
+   getCBManager()->dispenseCallbacksMatching(evtProcessExit,cbs);
+   for (unsigned int i = 0; i < cbs.size(); ++i) {
+       signalNotificationFD();
+
+       ExitCallback *cb = dynamic_cast<ExitCallback *>(cbs[i]);
+       if (cb) 
+           (*cb)(bpprocess->threads[0], ExitedViaSignal);
+#if defined(IBM_BPATCH_COMPAT)
+       // A different (compatibility) callback type. 
+       DPCLThreadEventCallback *tcb = dynamic_cast<DPCLThreadEventCallback *>(cbs[i]);
+       if (tcb) {
+           signal_printf("%s[%d]:  about to register/wait for exit callback\n", FILE__, __LINE__);
+           (*tcb)(bpprocess->threads[0], NULL, NULL);
+           signal_printf("%s[%d]:  exit callback done\n", FILE__, __LINE__);
+       }
+       // A different (compatibility) callback type. 
+       DPCLProcessEventCallback *pcb = dynamic_cast<DPCLProcessEventCallback *>(cbs[i]);
+       if (pcb) {
+           signal_printf("%s[%d]:  about to register/wait for exit callback\n", FILE__, __LINE__);
+           (*pcb)(bpprocess, NULL, NULL);
+           signal_printf("%s[%d]:  exit callback done\n", FILE__, __LINE__);
+       }
+#endif           
+   }
+   
+   // We now run the process out; set its state to terminated. Really, the user shouldn't
+   // try to do anything else with this, but we can get that happening.
+   BPatch_process *stillAround = getProcessByPid(pid);
+   if (stillAround)
+       stillAround->terminated = true;
+
+   // We need to clean this up... but the user still has pointers
+   // into this code. Ugh.
+   // Do not continue at this point; process is already gone.
+
+}
+
+
+void BPatch::registerThreadExit(process *proc, long tid, bool exiting)
+{
+    if (!proc)
+        return;
+    
+    int pid = proc->getPid();
+    
+    BPatch_process *bpprocess = getProcessByPid(pid);
+    bool wasProcessStopped = bpprocess->isVisiblyStopped;
+
+    
+    if (!bpprocess) {
+        // Error during startup can cause this -- we have a partially
+        // constructed process object, but it was never registered with
+        // bpatch
+        return;
+    }
+    BPatch_thread *thrd = bpprocess->getThread(tid);
+    if (!thrd) {
+        //If we don't have an BPatch thread, then it might have been an internal
+        // thread that we decided not to report to the user (happens during 
+        //  windows attach).  Just trigger the lower level clean up in this case.
+        if (tid == 0) {
+          fprintf(stderr, "%s[%d]:  about to deleteThread(0)\n", FILE__, __LINE__);
+        }
+        if (!exiting) proc->deleteThread(tid);        
+        return;
+    }
+
+    if (thrd->deleted_callback_made) { 
+        // Thread exits; we make the callback, then the process exits and
+        // tries to nuke it as well. This guards against that.
+        return;
+    }
+    thrd->deleted_callback_made = true;
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->dispenseCallbacksMatching(evtThreadExit, cbs);
+
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+
+        AsyncThreadEventCallback *cb = dynamic_cast<AsyncThreadEventCallback *>(cbs[i]);
+        mailbox_printf("%s[%d]:  executing thread exit callback\n", FILE__, __LINE__);
+        if (cb)
+            (*cb)(bpprocess, thrd);
+    }
+    if (!exiting) bpprocess->deleteBPThread(thrd);
+}
+
+
+
+/*
+ * BPatch::registerLoadedModule
+ *
+ * Register a new module loaded by a process (e.g., dlopen)
+ */
+
+void BPatch::registerLoadedModule(process *process, mapped_module *mod) {
+
+    BPatch_process *bProc = BPatch::bpatch->getProcessByPid(process->getPid());
+    if (!bProc) return; // Done
+    BPatch_image *bImage = bProc->getImage();
+    assert(bImage); // This we can assert to be true
+    
+    BPatch_module *bpmod = bImage->findOrCreateModule(mod);
+    
+    pdvector<CallbackBase *> cbs;
+    
+    if (! getCBManager()->dispenseCallbacksMatching(evtLoadLibrary, cbs)) {
+        return;
+    }
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+        DynLibraryCallback *cb = dynamic_cast<DynLibraryCallback *>(cbs[i]);
+        if (cb)
+            (*cb)(bProc->threads[0], bpmod, true);
+    }
+}
+
+/*
+ * BPatch::registerUnloadedModule
+ *
+ * Register a new module loaded by a process (e.g., dlopen)
+ */
+
+void BPatch::registerUnloadedModule(process *process, mapped_module *mod) {
+
+    BPatch_process *bProc = BPatch::bpatch->getProcessByPid(process->getPid());
+    if (!bProc) return; // Done
+    BPatch_image *bImage = bProc->getImage();
+    assert(bImage); // This we can assert to be true
+    
+    BPatch_module *bpmod = bImage->findModule(mod);
+    if (bpmod == NULL) return;
+
+    bImage->removeModule(bpmod);
+    
+    pdvector<CallbackBase *> cbs;
+    
+    // For now we use the same callback for load and unload of library....
+    if (! getCBManager()->dispenseCallbacksMatching(evtLoadLibrary, cbs)) {
+        return;
+    }
+    for (unsigned int i = 0; i < cbs.size(); ++i) {
+        signalNotificationFD();
+        DynLibraryCallback *cb = dynamic_cast<DynLibraryCallback *>(cbs[i]);
+        if (cb)
+            (*cb)(bProc->threads[0], bpmod, false);
+    }
+}
+
+
+/*
+ * BPatch::registerProcess
+ *
+ * Register a new BPatch_process object with the BPatch library (this function
+ * is called only by the constructor for BPatch_process).
+ *
+ * process	A pointer to the process to register.
+ */
+void BPatch::registerProcess(BPatch_process *process, int pid)
+{
+   if (!pid)
+      pid = process->getPid();
+
+   assert(!info->procsByPid.defines(pid) || !info->procsByPid[pid]);
+   info->procsByPid[pid] = process;
+}
+
+
+/*
+ * BPatch::unRegisterProcess
+ *
+ * Remove the BPatch_thread associated with a given pid from the list of
+ * threads being managed by the library.
+ *
+ * pid		The pid of the thread to be removed.
+ */
+void BPatch::unRegisterProcess(int pid)
+{
+    if (!info->procsByPid.defines(pid)) {
+       fprintf(stderr, "%s[%d]:  ERROR, no process %d defined in procsByPid\n", FILE__,  __LINE__, pid);
+       dictionary_hash_iter<int, BPatch_process *> iter(info->procsByPid);
+       BPatch_process *p;
+       int pid;
+       while (iter.next(pid, p)) {
+         fprintf(stderr, "%s[%d]:  have process %d\n", FILE__, __LINE__, pid);
+       }
+    }
+    assert(info->procsByPid.defines(pid));
+    info->procsByPid.undef(pid);	
+    assert(!info->procsByPid.defines(pid));
+}
+
+
+/*
+ * BPatch::processCreateInt
+ *
+ * Create a process and return a BPatch_process representing it.
+ * Returns NULL upon failure.
+ *
+ * path		The pathname of the executable for the new process.
+ * argv		A list of the arguments for the new process, terminated by a
+ *		NULL.
+ * envp		A list of values that make up the environment for the new
+ *		process, terminated by a NULL.  If envp is NULL, the new
+ *		new process will inherit the environemnt of the parent.
+ * stdin_fd	file descriptor to use for stdin for the application
+ * stdout_fd	file descriptor to use for stdout for the application
+ * stderr_fd	file descriptor to use for stderr for the application
+
+ */
+BPatch_process *BPatch::processCreateInt(const char *path, const char *argv[], 
+                                         const char **envp, int stdin_fd, 
+                                         int stdout_fd, int stderr_fd)
+{
+    clearError();
+
+    if( path == NULL ) { return NULL; }
+
+    BPatch_process *ret = 
+       new BPatch_process(path, argv, 
+                          envp, 
+                          stdin_fd, stdout_fd, stderr_fd);
+    
+    if (!ret->llproc ||
+        (ret->llproc->status() != stopped) ||
+        !ret->llproc->isBootstrappedYet()) 
+    { 
+       ret->BPatch_process_dtor();
+       delete ret;
+       reportError(BPatchFatal, 68, "create process failed bootstrap");
+       return NULL;
+    }
+
+    //ccw 23 jan 2002 : this forces the user to call
+    //BPatch_thread::enableDumpPatchedImage() if they want to use the save the world
+    //functionality.
+    ret->llproc->collectSaveWorldData = false;
+
+#if defined(cap_async_events)
+    async_printf("%s[%d]:  about to connect to process\n", FILE__, __LINE__);
+    if (!getAsync()->connectToProcess(ret)) {
+       bpfatal("%s[%d]: asyncEventHandler->connectToProcess failed\n", __FILE__, __LINE__);
+       fprintf(stderr,"%s[%d]: asyncEventHandler->connectToProcess failed\n", __FILE__, __LINE__);
+       return NULL;
+    }
+    asyncActive = true;
+#endif
+    ret->updateThreadInfo();
+    
+
+    return ret;
+}
+
+/*
+ * BPatch::createProcess
+ * This function is deprecated, see processCreate
+ */
+BPatch_thread *BPatch::createProcessInt(const char *path, const char *argv[], 
+                                         const char **envp, int stdin_fd, 
+                                         int stdout_fd, int stderr_fd)
+{
+   BPatch_process *ret = processCreateInt(path, argv, envp, stdin_fd, 
+                                          stdout_fd, stderr_fd);
+   if (!ret)
+      return NULL;
+
+   assert(ret->threads.size() > 0);
+   return ret->threads[0];
+}
+
+/*
+ * BPatch::processAttach
+ *
+ * Attach to a running process and return a BPatch_thread representing it.
+ * Returns NULL upon failure.
+ *
+ * path		The pathname of the executable for the process.
+ * pid		The id of the process to attach to.
+ */
+BPatch_process *BPatch::processAttachInt(const char *path, int pid)
+{
+   clearError();
+   
+   BPatch_process *ret = new BPatch_process(path, pid);
+
+   if (!ret->llproc ||
+       (ret->llproc->status() != stopped) ||
+       !ret->llproc->isBootstrappedYet()) {
+      // It would be considerate to (attempt to) leave the process running
+      // at this point (*before* deleting the BPatch_thread handle for it!),
+      // even though it might be in bad shape after the attempted attach.
+      char msg[256];
+      sprintf(msg,"attachProcess failed: process %d may now be killed!",pid);
+      reportError(BPatchWarning, 26, msg);
+      delete ret;
+      return NULL;
+   }
+#if defined(cap_async_events)
+   if (!getAsync()->connectToProcess(ret)) {
+      bperr("%s[%d]:  asyncEventHandler->connectToProcess failed\n", __FILE__, __LINE__);
+      return NULL;
+   } 
+   asyncActive = true;
+#endif
+    //ccw 31 jan 2003 : this forces the user to call
+    //BPatch_thread::enableDumpPatchedImage() if they want to use the save the world
+    //functionality.
+   ret->llproc->collectSaveWorldData = false;
+   ret->updateThreadInfo();
+
+   return ret;
+}
+
+/*
+ * BPatch::attachProcess
+ * This function is deprecated, see processAttach
+ */
+BPatch_thread *BPatch::attachProcessInt(const char *path, int pid)
+{
+   BPatch_process *proc = processAttachInt(path, pid);
+   if (!proc)
+      return NULL;
+   
+   assert(proc->threads.size() > 0);
+   return proc->threads[0];
+}
+
+/*
+ * pollForStatusChange
+ *
+ * Checks for unreported changes to the status of any child process, and
+ * returns true if any are detected.  Returns false otherwise.
+ *
+ * This function is declared as a friend of BPatch_thread so that it can use
+ * the BPatch_thread::getThreadEvent call to check for status changes.
+ */
+bool BPatch::pollForStatusChangeInt()
+{
+    getMailbox()->executeCallbacks(FILE__, __LINE__);
+
+    clearNotificationFD();
+    
+    if (mutateeStatusChange) {
+        mutateeStatusChange = false;
+        return true;
+    }
+#if defined(os_linux)
+   //  This might only be needed on linux 2.4, but we need to manually check
+   //  to see if any threads exited here, and, if they have...  kick the 
+   //  appropriate signal generator to wake up
+   dictionary_hash_iter<int, BPatch_process *> ti(info->procsByPid);
+
+   int pid;
+   BPatch_process *proc;
+   
+   while (ti.next(pid, proc))
+   {
+      assert(proc);
+      process *p = proc->llproc;
+      assert(p);
+      //  if the process has a rep lwp, it is not mt
+      dyn_lwp *replwp = p->getRepresentativeLWP();
+      if (replwp) continue;
+      SignalGenerator *sg = p->getSG();
+      assert(sg);
+      if (sg->exists_dead_lwp()) {
+        if (sg->isWaitingForOS()) {
+          //  the signal generator is inside a waitpid, kick the mutatee to wake
+          //  it up.
+          sg->forceWaitpidReturn();
+        }
+      }
+   }
+#endif
+    return false;
+}
+
+
+/*
+ * waitForStatusChange
+ *
+ * Blocks waiting for a change to occur in the running status of a child
+ * process.  Returns true upon success, false upon failure.
+ *
+ * This function is declared as a friend of BPatch_thread so that it can use
+ * the BPatch_thread::getThreadEvent call to check for status changes.
+ */
+bool BPatch::waitForStatusChangeInt()
+{
+
+  getMailbox()->executeCallbacks(FILE__, __LINE__);
+
+  if (mutateeStatusChange) {
+    mutateeStatusChange = false;
+    clearNotificationFD();
+    signal_printf("[%s:%u] - Returning due to immediate mutateeStatusChange\n", FILE__, __LINE__);
+    return true;
+  }
+
+  SignalGenerator *sh = NULL;
+
+  //  find a signal handler (in an active process)
+  extern pdvector<process *> processVec;
+  if (!processVec.size()) {
+      clearNotificationFD();
+      return false;
+  }
+
+  for (unsigned int i = 0; i < processVec.size(); ++i) {
+    if (processVec[i] && processVec[i]->status() != deleted) {
+      sh = processVec[i]->sh;
+      break;
+    }
+  } 
+  if (!sh) {
+    fprintf(stderr, "%s[%d]:  cannot find an event generator to wait for!\n", FILE__, __LINE__);
+
+    clearNotificationFD();
+    return false;
+  }
+  eventType evt = evtUndefined;
+  do {
+   pdvector<eventType> evts;
+   //evts.push_back(evtProcessStop);
+   //evts.push_back(evtProcessExit);
+   //evts.push_back(evtThreadCreate);
+   //evts.push_back(evtThreadExit);
+
+   // I'm kinda confused... what about fork or exec? The above wouldn't wake us
+   // up...
+   //evts.push_back(evtSyscallExit);
+   // Or a library load for that matter.
+
+   // We need to wait for anything; non-exits may cause a callback to be made
+   // (without hitting an evtProcessStop)
+   evts.push_back(evtAnyEvent);
+
+   waitingForStatusChange = true;
+   getMailbox()->executeCallbacks(FILE__, __LINE__);
+   if (mutateeStatusChange) break;
+   signal_printf("Blocking in waitForStatusChange\n");
+   evt = SignalGeneratorCommon::globalWaitForOneOf(evts);
+  } while ((    evt != evtProcessStop ) 
+            && (evt != evtProcessExit)
+            && (evt != evtThreadExit)
+           && (evt != evtThreadCreate));
+
+  signal_printf("Returning from waitForStatusChange, evt = %s, mutateeStatusChange = %d\n", eventType2str(evt), (int) mutateeStatusChange);
+  waitingForStatusChange = false;
+
+  clearNotificationFD();
+
+  if (mutateeStatusChange) {
+    mutateeStatusChange = false;
+    return true;
+  }
+  //  we waited for a change, but didn't get it
+  fprintf(stderr, "%s[%d]:  Error in status change reporting\n", FILE__, __LINE__);
+  return false;
+}
+
+/*
+ * createEnum
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+BPatch_type * BPatch::createEnumInt( const char * name, 
+				     BPatch_Vector<char *> &elementNames,
+				     BPatch_Vector<int> &elementIds)
+{
+
+    if (elementNames.size() != elementIds.size()) {
+      return NULL;
+    }
+
+    BPatch_fieldListType * newType = new BPatch_typeEnum(name);
+    if (!newType) return NULL;
+    
+    APITypes->addType(newType);
+
+    // ADD components to type
+    for (unsigned int i=0; i < elementNames.size(); i++) {
+        newType->addField(elementNames[i], elementIds[i]);
+    }
+
+    return(newType);
+}
+
+
+/*
+ * createEnum
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.  The user has left element id specification to us
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+BPatch_type * BPatch::createEnumAutoId( const char * name, 
+				        BPatch_Vector<char *> &elementNames)
+{
+    BPatch_fieldListType * newType = new BPatch_typeEnum(name);
+
+    if (!newType) return NULL;
+    
+    APITypes->addType(newType);
+
+    // ADD components to type
+    for (unsigned int i=0; i < elementNames.size(); i++) {
+        newType->addField(elementNames[i], i);
+    }
+
+    return(newType);
+}
+
+/*
+ * createStructs
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+
+BPatch_type * BPatch::createStructInt( const char * name,
+				       BPatch_Vector<char *> &fieldNames,
+				       BPatch_Vector<BPatch_type *> &fieldTypes)
+{
+    unsigned int i;
+    int offset, size;
+
+    offset = size = 0;
+    if (fieldNames.size() != fieldTypes.size()) {
+      return NULL;
+    }
+
+    //Compute the size of the struct
+    for (i=0; i < fieldNames.size(); i++) {
+        BPatch_type *type = fieldTypes[i];
+        size = type->getSize();
+        size += size;
+    }
+  
+    BPatch_fieldListType *newType = new BPatch_typeStruct(name);
+    if (!newType) return NULL;
+    
+    APITypes->addType(newType);
+
+    // ADD components to type
+    size = 0;
+    for (i=0; i < fieldNames.size(); i++) {
+        BPatch_type *type = fieldTypes[i];
+        size = type->getSize();
+        newType->addField(fieldNames[i], type->getDataClass(), type, offset, size);
+  
+        // Calculate next offset (in bits) into the struct
+        offset += (size * 8);
+    }
+
+    return(newType);
+}
+
+/*
+ * createUnions
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+
+BPatch_type * BPatch::createUnionInt( const char * name, 
+				      BPatch_Vector<char *> &fieldNames,
+				      BPatch_Vector<BPatch_type *> &fieldTypes)
+{
+    unsigned int i;
+    int offset, size, newsize;
+    offset = size = newsize = 0;
+
+    if (fieldNames.size() != fieldTypes.size()) {
+        return NULL;
+    }
+
+    // Compute the size of the union
+    for (i=0; i < fieldTypes.size(); i++) {
+	BPatch_type *type = fieldTypes[i];
+	newsize = type->getSize();
+	if(size < newsize) size = newsize;
+    }
+  
+    BPatch_fieldListType * newType = new BPatch_typeUnion(name);
+    if (!newType) return NULL;
+
+    APITypes->addType(newType);
+
+    // ADD components to type
+    for (i=0; i < fieldNames.size(); i++) {
+        BPatch_type *type = fieldTypes[i];
+	size = type->getSize();
+	newType->addField(fieldNames[i], type->getDataClass(), type, offset, size);
+    }  
+    return(newType);
+}
+
+
+/*
+ * createArray for Arrays and SymTypeRanges
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+BPatch_type * BPatch::createArrayInt( const char * name, BPatch_type * ptr,
+				      unsigned int low, unsigned int hi)
+{
+
+    BPatch_type * newType;
+
+    if (!ptr) {
+        return NULL;
+    } else {
+        newType = new BPatch_typeArray(ptr, low, hi, name);
+        if (!newType) return NULL;
+    }
+
+    APITypes->addType(newType);
+
+    return newType;
+}
+
+/*
+ * createPointer for BPatch_pointers
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+BPatch_type * BPatch::createPointerInt(const char * name, BPatch_type * ptr,
+                                       int /*size*/)
+{
+
+    BPatch_type * newType = new BPatch_typePointer(ptr, name);
+    if(!newType) return NULL;
+
+    APITypes->addType(newType);
+  
+    return newType;
+}
+
+/*
+ * createScalar for scalars with a size and no range
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+
+BPatch_type * BPatch::createScalarInt( const char * name, int size)
+{
+    BPatch_type * newType = new BPatch_typeScalar(size, name);
+    if (!newType) return NULL;
+
+    APITypes->addType(newType);
+ 
+    return newType;
+}
+
+/*
+ * createType for typedefs
+ *
+ * This function is a wrapper for the BPatch_type constructors for API/User
+ * created types.
+ *
+ * It returns a pointer to a BPatch_type that was added to the APITypes
+ * collection.
+ */
+BPatch_type * BPatch::createTypedefInt( const char * name, BPatch_type * ptr)
+{
+    BPatch_type * newType = new BPatch_typeTypedef(ptr, name);
+
+    if (!newType) return NULL;
+
+    APITypes->addType(newType);
+  
+    return newType;
+}
+
+bool BPatch::waitUntilStoppedInt(BPatch_thread *appThread){
+
+   bool ret = false;
+
+   while (1) {
+     __LOCK;
+     if (!appThread->isStopped() && !appThread->isTerminated()) {
+       __UNLOCK;
+       this->waitForStatusChange();
+     }
+     else {
+       __UNLOCK;
+       break;
+     }
+   }
+
+   __LOCK;
+
+	if (!appThread->isStopped())
+	{
+		cerr << "ERROR : process did not signal mutator via stop"
+		     << endl;
+		ret = false;
+ 		goto done;
+	}
+#if defined(i386_unknown_nt4_0) || \
+    defined(mips_unknown_ce2_11)
+	else if((appThread->stopSignal() != EXCEPTION_BREAKPOINT) && 
+		(appThread->stopSignal() != -1))
+	{
+		cerr << "ERROR : process stopped on signal different"
+		     << " than SIGTRAP" << endl;
+		ret =  false;
+ 		goto done;
+	}
+#else
+	else if ((appThread->stopSignal() != SIGSTOP) &&
+#if defined(bug_irix_broken_sigstop)
+		 (appThread->stopSignal() != SIGEMT) &&
+#endif 
+		 (appThread->stopSignal() != SIGHUP)) {
+		cerr << "ERROR :  process stopped on signal "
+		     << "different than SIGSTOP" << endl;
+		ret =  false;
+ 		goto done;
+	}
+#endif
+
+  done:
+   __UNLOCK;
+
+  return ret;
+}
+
+BPatch_stats &BPatch::getBPatchStatisticsInt()
+{
+  updateStats();
+  return stats;
+}
+//  updateStats() -- an internal function called before returning
+//  statistics buffer to caller of BPatch_getStatistics(),
+//  -- just copies global variable statistics counters into 
+//  the buffer which is returned to the user.
+void BPatch::updateStats() 
+{
+  stats.pointsUsed = pointsUsed;
+  stats.totalMiniTramps = totalMiniTramps;
+  stats.trampBytes = trampBytes;
+  stats.ptraceOtherOps = ptraceOtherOps;
+  stats.ptraceOps = ptraceOps;
+  stats.ptraceBytes = ptraceBytes;
+  stats.insnGenerated = insnGenerated;
+}
+
+bool BPatch::registerThreadEventCallbackInt(BPatch_asyncEventType type,
+                                            BPatchAsyncThreadEventCallback func)
+{
+    
+    eventType evt;
+    switch (type) {
+      case BPatch_threadCreateEvent: evt = evtThreadCreate; break;
+      case BPatch_threadDestroyEvent: evt = evtThreadExit; break;
+      default:
+        fprintf(stderr, "%s[%d]:  Cannot register callback for type %s\n",
+               FILE__, __LINE__, asyncEventType2Str(type));
+        return false; 
+    };
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evt, cbs);
+    
+    bool ret;
+    if (func != 0) {
+	AsyncThreadEventCallback *cb = new AsyncThreadEventCallback(func);
+	ret = getCBManager()->registerCallback(evt, cb);
+    }
+    else {
+	// For consistency with fork, exit, ... callbacks, treat
+	// func == 0 as a remove-all-callbacks-of-type-x request
+	ret = true;
+    }
+    return ret;
+}
+
+bool BPatch::removeThreadEventCallbackInt(BPatch_asyncEventType type,
+                                          BPatchAsyncThreadEventCallback cb)
+{
+    eventType evt;
+    switch (type) {
+      case BPatch_threadCreateEvent: evt = evtThreadCreate; break;
+      case BPatch_threadDestroyEvent: evt = evtThreadExit; break;
+      default:
+        fprintf(stderr, "%s[%d]:  Cannot remove callback for type %s\n",
+               FILE__, __LINE__, asyncEventType2Str(type));
+        return false; 
+    };
+
+    pdvector<CallbackBase *> cbs;
+    if (!getCBManager()->removeCallbacks(evt, cbs)) {
+        fprintf(stderr, "%s[%d]:  Cannot remove callback for type %s, not found\n",
+               FILE__, __LINE__, asyncEventType2Str(type));
+        return false;
+    }
+
+    //  See if supplied function was in the set of removed functions
+    bool ret = false;
+    for (int i = cbs.size() -1; i >= 0; i--) {
+      AsyncThreadEventCallback *test = (AsyncThreadEventCallback *)cbs[i];
+      if (test->getFunc() == cb) {
+        //  found it, destroy it
+        cbs.erase(i,i);
+        ret = true;
+        delete test;
+      } 
+    }
+
+    //  we deleted any found target functions, put the others back.
+    for (unsigned int i = 0; i < cbs.size(); ++i) 
+       if (!getCBManager()->registerCallback(evt, cbs[i]))
+          ret = false;
+
+    return ret;
+}
+
+bool BPatch::registerDynamicCallCallbackInt(BPatchDynamicCallSiteCallback func)
+{
+    pdvector<CallbackBase *> cbs;
+    DynamicCallsiteCallback *cb = new DynamicCallsiteCallback(func);
+    getCBManager()->removeCallbacks(evtDynamicCall, cbs);
+    bool ret = getCBManager()->registerCallback(evtDynamicCall, cb);
+
+    return ret;
+}
+
+bool BPatch::removeDynamicCallCallbackInt(BPatchDynamicCallSiteCallback func)
+{
+
+    pdvector<CallbackBase *> cbs;
+    if (!getCBManager()->removeCallbacks(evtDynamicCall, cbs)) {
+        fprintf(stderr, "%s[%d]:  Cannot remove callback for type evtDynamicCall, not found\n",
+               FILE__, __LINE__);
+        return false;
+    }
+
+    //  See if supplied function was in the set of removed functions
+    bool ret = false;
+    for (int i = cbs.size() -1; i >= 0; i--) {
+      DynamicCallsiteCallback *test = (DynamicCallsiteCallback *)cbs[i];
+      if (test->getFunc() == func) {
+        //  found it, destroy it
+        cbs.erase(i,i);
+        ret = true;
+        delete test;
+      } 
+    }
+
+    //  we deleted any found target functions, put the others back.
+    for (unsigned int i = 0; i < cbs.size(); ++i) 
+       if (!getCBManager()->registerCallback(evtDynamicCall, cbs[i]))
+          ret = false;
+
+    return ret;
+}
+
+bool BPatch::registerUserEventCallbackInt(BPatchUserEventCallback func)
+{
+  pdvector<CallbackBase *> cbs;
+  UserEventCallback *cb = new UserEventCallback(func);
+  bool ret = getCBManager()->registerCallback(evtUserEvent, cb);
+
+  return ret;
+}
+
+bool BPatch::removeUserEventCallbackInt(BPatchUserEventCallback cb)
+{
+    bool ret = false;
+    pdvector<CallbackBase *> cbs;
+    if (!getCBManager()->removeCallbacks(evtUserEvent, cbs)) {
+        fprintf(stderr, "%s[%d]:  Cannot remove callback evtUserEvent, not found\n",
+               FILE__, __LINE__);
+        return false;
+    }
+
+    //  See if supplied function was in the set of removed functions
+    for (int i = cbs.size() -1; i >= 0; i--) {
+      UserEventCallback *test = (UserEventCallback *)cbs[i];
+      if (test->getFunc() == cb) {
+        //  found it, destroy it
+        cbs.erase(i,i);
+        ret = true;
+        delete test;
+      } 
+    }
+
+    //  we deleted any found target functions, put the others back.
+    for (unsigned int i = 0; i < cbs.size(); ++i) 
+       if (!getCBManager()->registerCallback(evtUserEvent, cbs[i]))
+          ret = false;
+
+    return ret;
+}
+
+
+
+void BPatch::continueIfExists(int pid) 
+{
+    BPatch_process *proc = getProcessByPid(pid);
+    if (!proc) return;
+
+    // Set everything back to the way it was...
+    // We use async continue here to _be sure_ that the SH
+    // that we're in runs to completion, instead of blocking
+    // on someone else.
+
+    if (proc->isAttemptingAStop) {
+        return;
+    }
+
+    proc->isVisiblyStopped = false;
+
+    proc->llproc->sh->overrideSyncContinueState(runRequest);
+
+    proc->llproc->sh->continueProcessAsync();
+}
+
+////////////// Signal FD functions
+
+void BPatch::signalNotificationFD() {
+#if !defined(os_windows)
+    // If the FDs are set up, write a byte to the input side.
+    if (notificationFDInput_ == -1) return;
+    if (FDneedsPolling_) return;
+
+    char f = (char) 42;
+
+    int ret = write(notificationFDInput_, &f, sizeof(char));
+
+    if (ret == -1)
+        perror("Notification write");
+    else 
+        FDneedsPolling_ = true;
+#endif
+    return;
+}
+
+void BPatch::clearNotificationFD() {
+#if !defined(os_windows)
+    if (notificationFDOutput_ == -1) return;
+    if (!FDneedsPolling_) return;
+    char buf;
+
+    read(notificationFDOutput_, &buf, sizeof(char));
+    FDneedsPolling_ = false;
+#endif
+    return;
+}
+
+int BPatch::getNotificationFDInt() {
+#if !defined(os_windows)
+    if (notificationFDOutput_ == -1) {
+        assert(notificationFDInput_ == -1);
+        int pipeFDs[2];
+        pipeFDs[0] = pipeFDs[1] = -1;
+        int ret = pipe(pipeFDs);
+        if (ret == 0) {
+            notificationFDOutput_ = pipeFDs[0];
+            notificationFDInput_ = pipeFDs[1];
+        }
+    }
+
+    return notificationFDOutput_;
+#else
+    return -1;
+#endif
+}
+
+/*********************************************************************
+ *** DPCL COMPATIBILITY 
+ ***
+ *** These functions exist for source-level compatibility with IBM's DPCL
+ *** library. Do not use them if you are not using DPCL. If you are using
+ *** DPCL, consider moving to the new event interfaces.
+ *********************************************************************/
+
+#ifdef IBM_BPATCH_COMPAT
+
+BPatchProcessEventCallback BPatch::registerExitCallbackDPCL(BPatchProcessEventCallback func)
+{
+
+    BPatchProcessEventCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtProcessExit, cbs);
+    
+    if (func != 0) {
+	DPCLProcessEventCallback *cb = new DPCLProcessEventCallback(func);
+	getCBManager()->registerCallback(evtProcessExit, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    if (cbs.size()) {
+        DPCLProcessEventCallback *fcb = dynamic_cast<DPCLProcessEventCallback *>(cbs[0]);
+        if (!fcb) return NULL;
+        ret =  fcb->getFunc();
+    }
+
+    return ret;
+}
+
+/*
+ * Register a function to call when an RPC (i.e. oneshot) is done.
+ *
+ * dyninst version is a callback that is defined for BPatch_thread
+ *
+ */
+
+BPatchProcessEventCallback BPatch::registerRPCTerminationCallbackInt(BPatchProcessEventCallback func)
+{
+    BPatchProcessEventCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtOneTimeCode, cbs);
+
+    if (func != 0) {
+	DPCLProcessEventCallback *cb = new DPCLProcessEventCallback(func);
+	getCBManager()->registerCallback(evtOneTimeCode, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+    
+    if (cbs.size()) {
+        DPCLProcessEventCallback *fcb = dynamic_cast<DPCLProcessEventCallback *>(cbs[0]);
+        if (!fcb) return NULL;
+        ret =  fcb->getFunc();
+    }
+
+    return ret;
+}
+
+
+void setLogging_NP(BPatchLoggingCallback, int)
+{
+    return;
+}
+
+int BPatch::getLastErrorCodeInt()
+{
+  return lastError;
+}
+BPatchProcessEventCallback BPatch::registerDetachDoneCallbackInt(BPatchProcessEventCallback)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerDetachDoneCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+BPatchProcessEventCallback BPatch::registerSnippetRemovedCallbackInt(BPatchProcessEventCallback)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerSnippetRemovedCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+BPatchProcessEventCallback BPatch::registerSignalCallbackInt(BPatchProcessEventCallback, int signum)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerSignalCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+
+/***************************************************************
+ ********** DEPRECATED VERSIONS!!!!!!!
+ ***************************************************************/
+
+
+BPatchThreadEventCallback BPatch::registerExitCallbackDPCL(BPatchThreadEventCallback func)
+{
+
+    BPatchThreadEventCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtProcessExit, cbs);
+    
+    if (func != NULL) {
+	DPCLThreadEventCallback *cb = new DPCLThreadEventCallback(func);
+	getCBManager()->registerCallback(evtProcessExit, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    if (cbs.size()) {
+        DPCLThreadEventCallback *fcb = dynamic_cast<DPCLThreadEventCallback *>(cbs[0]);
+        if (!fcb) return NULL;
+        ret =  fcb->getFunc();
+    }
+
+    return ret;
+}
+
+BPatchThreadEventCallback BPatch::registerRPCTerminationCallbackInt(BPatchThreadEventCallback func)
+{
+    BPatchThreadEventCallback ret = NULL;
+
+    pdvector<CallbackBase *> cbs;
+    getCBManager()->removeCallbacks(evtOneTimeCode, cbs);
+
+    if (func != 0) {
+	DPCLThreadEventCallback *cb = new DPCLThreadEventCallback(func);
+	getCBManager()->registerCallback(evtOneTimeCode, cb);
+    }
+    // If func is zero, we assume it is a remove-callback request
+
+    if (cbs.size()) {
+        DPCLThreadEventCallback *fcb = dynamic_cast<DPCLThreadEventCallback *>(cbs[0]);
+        if (!fcb) return NULL;
+        ret =  fcb->getFunc();
+    }
+    
+    return ret;
+}
+
+BPatchThreadEventCallback BPatch::registerDetachDoneCallbackInt(BPatchThreadEventCallback)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerDetachDoneCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+BPatchThreadEventCallback BPatch::registerSnippetRemovedCallbackInt(BPatchThreadEventCallback)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerSnippetRemovedCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+BPatchThreadEventCallback BPatch::registerSignalCallbackInt(BPatchThreadEventCallback, int signum)
+{
+    //fprintf(stderr, "%s[%d]:  WARNING:  registerSignalCallback is not implemented yet\n", __FILE__, __LINE__);
+  return NULL;
+}
+
+#endif
+

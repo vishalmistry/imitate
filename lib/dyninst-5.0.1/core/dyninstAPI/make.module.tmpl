@@ -1,0 +1,172 @@
+# 
+# Common makefile template for the dyninstAPI library.  This file is not
+# intended to be a useful Makefile in isolation; instead, it should be
+# included from within an architecture-specific Makefile.
+#
+# $Id: make.module.tmpl,v 1.77 2006/05/16 01:56:56 jodom Exp $
+#
+
+SUITE_NAME	= Dyninst
+RELEASE_NUM	= 5.0b1
+#BUILD_MARK should be (re-)defined in core/make.config.local rather than here!
+
+DEFINES		     += -UMT_THREAD \
+			-DBPATCH_LIBRARY -DBPATCH_SET_MUTATIONS_ACTIVE \
+			-DBPATCH_LIBRARY_F -DNEW_TIME_TYPES
+
+CFLAGS		     += $(USEFULWARNINGS) $(DEFINES)
+CXXFLAGS	     += $(USEFULWARNINGS) $(DEFINES)
+TFLAGS		     += $(TCLFRIENDLYWARNINGS) $(DEFINES)
+
+ifdef GCC_2_95
+# This may cause problems on Alpha
+# GCC has a new mangled name squisher (-fsquangle) which can be 
+# set to "on" by default. This causes linker problems, so we
+# default to "off".
+CFLAGS		+= -fno-squangle
+CXXFLAGS	+= -fno-squangle
+TFLAGS		+= -fno-squangle
+endif
+
+ifndef TARGET
+TARGET		= libdyninstAPI.so
+endif
+
+LDFLAGS += -lpthread
+
+LDFLAGS     += $(LIBDIR)
+ifndef USES_NATIVE_CC
+LD		= $(GXX)
+LDFLAGS		+= -shared $(G_PTHREAD_LD)
+CFLAGS		+= -fPIC
+CXXFLAGS	+= -fPIC $(G_PTHREAD)
+else
+ifeq (solaris,$(findstring solaris,$(PLATFORM)))
+LDFLAGS		+= -G
+endif #sparc
+endif #USES_NATIVE
+TFLAGS		+= -fPIC
+
+VPATH	     += ../../dyninstAPI/src:../dyninstAPI/h:\
+		../../common/src:../../paradyn/h
+
+ifndef AUTO_TEMPLATES
+SRCS         += ../src/BPatch_templates.C \
+		../src/templates0.C \
+		../src/templates1.C \
+		../src/templates2.C \
+
+endif
+
+SRCS	     +=	../src/BPatch.C \
+		../src/BPatch_image.C \
+		../src/BPatch_function.C \
+		../src/BPatch_snippet.C \
+		../src/BPatch_thread.C \
+              ../src/BPatch_process.C \
+		../src/BPatch_type.C \
+		../src/BPatch_module.C \
+		../src/BPatch_point.C \
+		../src/BPatch_collections.C \
+		../src/BPatch_sourceBlock.C \
+		../src/BPatch_basicBlock.C \
+		../src/BPatch_basicBlockLoop.C \
+		../src/BPatch_edge.C \
+		../src/BPatch_loopTreeNode.C \
+		../src/BPatch_flowGraph.C \
+                ../src/BPatch_frame.C \
+		../src/Object.C \
+                ../src/MemoryAccess.C \
+		../src/dummy.C \
+		../src/api_showerror.C \
+		../src/ast.C \
+                ../src/arch.C \
+       		../src/inst.C \
+                ../src/instPoint.C \
+                ../src/multiTramp.C \
+                ../src/baseTramp.C \
+                ../src/miniTramp.C \
+                ../src/InstrucIter-xplat.C \
+		../src/dyn_thread.C \
+		../src/process.C \
+		../src/dyn_lwp.C \
+		../src/frame.C \
+		../src/signalhandler.C \
+                ../src/signalgenerator.C \
+				../src/eventgate.C \
+		../src/callbacks.C \
+		../src/mailbox.C \
+		../src/EventHandler.C \
+		../src/rpcMgr.C \
+		../src/rpcMgr-lwp.C \
+		../src/rpcMgr-thr.C \
+		../src/codeRange.C \
+		../src/stats.C \
+		../src/symtab.C \
+        ../src/image-flowGraph.C \
+		../src/dominator.C \
+ 		../src/image-func.C \
+		../src/mapped_object.C \
+                ../src/mapped_module.C \
+		../src/function.C \
+                ../src/reloc-func.C \
+                ../src/variable.C \
+		../src/util.C \
+       		../src/LineInformation.C \
+		../src/BPatch_instruction.C \
+		../src/BPatch_asyncEventHandler.C \
+		../src/BPatch_eventLock.C \
+		../src/bitArray.C \
+		../../common/src/Ident.C \
+		../../common/src/String.C \
+		../../common/src/Timer.C \
+		../../common/src/Types.C \
+		../../common/src/debugOstream.C \
+		../../common/src/lprintf.C \
+		../../common/src/pathName.C \
+		../../common/src/Time.C \
+		../../common/src/fraction.C \
+		../../common/src/timing.C \
+#		../../common/src/Dictionary.C \
+#		../../common/src/vectorSet.C \
+
+
+#IGEN_GEN_SRCS = 
+
+#IGEN_ISRCS    = 
+
+ifndef USES_NATIVE_CC
+ifdef CROSSCOMPILER
+SYSLIBS		+= -liberty -lg++ -lstdc++ -lm
+else
+SYSLIBS         += -liberty
+endif
+else
+SYSLIBS		+= -ldemangle
+endif
+
+IFLAGS       += -I../$(PLATFORM) -I../src -I../h
+
+# All that, and we finally get a target...
+all: $(TARGET) $(EXTRA_LIBS)
+
+
+# I couldn't figure out how to explicitly instantiate a templated
+# function whose template arguments are protected members of
+# LineInformation, but apparently the compiler can.  Since the
+# function is only used internally by LineInformation, the
+# templates won't be duplicated.
+LineInformation.o : ../../dyninstAPI/src/LineInformation.C
+	$(CXX) -g $(TFLAGS) -c $<
+    
+BPatch_templates.o: ../src/BPatch_templates.C
+	$(CXX) $(TFLAGS) -c ../src/BPatch_templates.C
+
+templates0.o: ../src/templates0.C
+	$(CXX) $(TFLAGS) -c ../src/templates0.C
+
+templates1.o: ../src/templates1.C
+	$(CXX) $(TFLAGS) -c ../src/templates1.C
+
+templates2.o: ../src/templates2.C
+	$(CXX) $(TFLAGS) -c ../src/templates2.C

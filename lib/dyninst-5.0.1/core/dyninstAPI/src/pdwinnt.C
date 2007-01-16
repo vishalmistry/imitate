@@ -1,0 +1,2278 @@
+/*
+ * Copyright (c) 1996-2004 Barton P. Miller
+ * 
+ * We provide the Paradyn Parallel Performance Tools (below
+ * described as "Paradyn") on an AS IS basis, and do not warrant its
+ * validity or performance.  We reserve the right to update, modify,
+ * or discontinue this software at any time.  We shall have no
+ * obligation to supply such updates or modifications or any other
+ * form of support to you.
+ * 
+ * This license is for research uses.  For such uses, there is no
+ * charge. We define "research use" to mean you may freely use it
+ * inside your organization for whatever purposes you see fit. But you
+ * may not re-distribute Paradyn or parts of Paradyn, in any form
+ * source or binary (including derivatives), electronic or otherwise,
+ * to any other organization or entity without our permission.
+ * 
+ * (for other uses, please contact us at paradyn@cs.wisc.edu)
+ * 
+ * All warranties, including without limitation, any warranty of
+ * merchantability or fitness for a particular purpose, are hereby
+ * excluded.
+ * 
+ * By your use of Paradyn, you understand and agree that we (or any
+ * other person or entity with proprietary rights in Paradyn) are
+ * under no obligation to provide either maintenance services,
+ * update services, notices of latent defects, or correction of
+ * defects for Paradyn.
+ * 
+ * Even if advised of the possibility of such damages, under no
+ * circumstances shall we (or any other person or entity with
+ * proprietary rights in the software licensed hereunder) be liable
+ * to you or any third party for direct, indirect, or consequential
+ * damages of any character regardless of type of action, including,
+ * without limitation, loss of profits, loss of use, loss of good
+ * will, or computer failure or malfunction.  You agree to indemnify
+ * us (and any other person or entity with proprietary rights in the
+ * software licensed hereunder) for any and all liability it may
+ * incur to third parties resulting from your use of Paradyn.
+ */
+
+// $Id: pdwinnt.C,v 1.158.2.1 2006/09/19 16:07:15 legendre Exp $
+
+#include "common/h/std_namesp.h"
+#include <iomanip>
+#include "dyninstAPI/src/symtab.h"
+#include "common/h/headers.h"
+#include "dyninstAPI/src/os.h"
+#include "dyninstAPI/src/dyn_lwp.h"
+#include "dyninstAPI/src/process.h"
+#include "dyninstAPI/src/dyn_thread.h"
+#include "dyninstAPI/src/stats.h"
+#include "common/h/Types.h"
+#include "dyninstAPI/src/showerror.h"
+#include "dyninstAPI/src/instPoint.h"
+#include "dyninstAPI/src/signalgenerator.h"
+#include "dyninstAPI/src/signalhandler.h"
+#include "dyninstAPI/src/debuggerinterface.h"
+#include <psapi.h>
+#include <windows.h>
+#include "dyninstAPI/src/mapped_object.h"
+#include "dyninstAPI/src/emit-x86.h"
+#include "dyninstAPI/src/arch-x86.h"
+#include "dyninstAPI/src/inst-x86.h"
+
+#ifndef BPATCH_LIBRARY
+#include "paradynd/src/main.h"
+#include "paradynd/src/init.h"
+#include "paradynd/src/perfStream.h" //SPLIT ccw 4 jun 2002
+#endif
+
+#ifdef BPATCH_LIBRARY
+/* XXX This is only needed for emulating signals. */
+#include "BPatch_thread.h"
+#include "nt_signal_emul.h"
+#endif
+
+#include "dyninstAPI/src/rpcMgr.h"
+
+// prototypes of functions used in this file
+static pdstring GetLoadedDllImageName( process* p, const DEBUG_EVENT& ev );
+
+
+void InitSymbolHandler( HANDLE hProcess );
+void ReleaseSymbolHandler( HANDLE hProcess );
+extern bool isValidAddress(process *proc, Address where);
+
+void printSysError(unsigned errNo) {
+    char buf[1000];
+    bool result = FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, errNo, 
+		  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+		  buf, 1000, NULL);
+    if (!result) {
+        fprintf(stderr, "Couldn't print error message\n");
+        printSysError(GetLastError());
+    }
+    fprintf(stderr, "*** System error [%d]: %s\n", errNo, buf);
+    fflush(stderr);
+}
+
+
+// check if a file handle is for kernel32.dll
+static bool kludge_isKernel32Dll(HANDLE fileHandle, pdstring &kernel32Name) {
+    static DWORD IndxHigh, IndxLow;
+    static bool firstTime = true;
+    BY_HANDLE_FILE_INFORMATION info;
+    static pdstring kernel32Name_;
+
+    if (firstTime) {
+       HANDLE kernel32H;
+       firstTime = false;
+       char sysRootDir[MAX_PATH+1];
+       if (GetSystemDirectory(sysRootDir, MAX_PATH) == 0)
+          assert(0);
+       kernel32Name_ = pdstring(sysRootDir) + "\\kernel32.dll";
+       kernel32H = CreateFile(kernel32Name_.c_str(), GENERIC_READ, 
+                              FILE_SHARE_READ, NULL, OPEN_EXISTING, NULL, NULL);
+       assert(kernel32H);
+       if (!GetFileInformationByHandle(kernel32H, &info)) {
+          printSysError(GetLastError());
+          assert(0);
+       }
+       IndxHigh = info.nFileIndexHigh;
+       IndxLow = info.nFileIndexLow;
+       CloseHandle(kernel32H);
+    }
+
+    if (!GetFileInformationByHandle(fileHandle, &info))
+       return false;
+
+    if (info.nFileIndexHigh==IndxHigh && info.nFileIndexLow==IndxLow) {
+      kernel32Name = kernel32Name_;
+      return true;
+    }
+    return false;
+}
+
+/* 
+   Loading libDyninstRT.dll
+
+   We load libDyninstRT.dll dynamically, by inserting code into the
+   application to call LoadLibraryA. We don't use the inferior RPC
+   mechanism from class process because it already assumes that
+   libdyninst is loaded (it uses the inferior heap).
+   Instead, we use a simple inferior call mechanism defined below
+   to insert the code to call LoadLibraryA("libdyninstRT.dll").
+ */
+
+Address loadDyninstDll(process *p, char Buffer[LOAD_DYNINST_BUF_SIZE]) {
+    return 0;
+}
+
+// osTraceMe is not needed in Windows NT
+void OS::osTraceMe(void) {}
+
+bool process::dumpImage(pdstring outFile)
+{
+  fprintf(stderr, "%s[%d]:  Sorry, dumpImage() not implemented for windows yet\n", FILE__, __LINE__);
+  fprintf(stderr, "\t cannot create '%s' as requested\n", outFile.c_str());
+  return false;
+}
+
+dyn_lwp *process::createRepresentativeLWP() {
+   representativeLWP = createFictionalLWP(0);
+   return representativeLWP;
+}
+
+static void hasIndex(process *, unsigned, void *data, void *result) 
+{
+    *((int *) data) = (int) result;
+}
+
+// Thread creation
+bool SignalHandler::handleThreadCreate(EventRecord &ev, bool &continueHint)
+{
+   process *proc = ev.proc;
+   CONTEXT cont;
+   Address initial_func = 0, stack_top = 0;
+   BPatch_process *bproc = (BPatch_process *) ev.proc->container_proc;
+   HANDLE lwpid = ev.info.u.CreateThread.hThread;
+   int_function *func = NULL;
+   int tid = ev.info.dwThreadId;
+   
+   //Create the lwp early on Windows
+   dyn_lwp *lwp = proc->createRealLWP((int) lwpid, (int) lwpid);
+   lwp->setFileHandle(lwpid);
+   lwp->setProcessHandle(proc->processHandle_);
+   lwp->attach();
+   ev.lwp = lwp;
+   proc->set_lwp_status(lwp, stopped);
+
+   continueHint = true;
+   if (proc->reachedBootstrapState(bootstrapped_bs)) 
+   {
+        //The process is already running when this thread was created.  It's at
+        //its initial entry point where we can read the initial function out of EAX
+        cont.ContextFlags = CONTEXT_FULL;
+        if (GetThreadContext(lwpid, &cont))
+        {
+            initial_func = cont.Eax;
+            stack_top = cont.Esp;           
+        }
+   }
+
+   if (initial_func) {
+     func = proc->findJumpTargetFuncByAddr(initial_func);
+     if (!func)
+        return false;
+   }
+
+   //Create the dyn_thread early as well.
+   dyn_thread *thr = new dyn_thread(proc, -1, lwp);
+   thr->update_tid(tid);
+   thr->update_start_pc(initial_func);
+   thr->update_start_func(func);
+   thr->update_stack_addr(stack_top);
+
+   if (func) {
+       proc->instrumentThreadInitialFunc(func);
+   }
+
+   return true;
+}
+
+bool SignalHandler::handleExecEntry(EventRecord &, bool &)
+{
+  assert(0);
+  return false;
+}
+
+// Process creation
+bool SignalHandler::handleProcessCreate(EventRecord &ev, bool &continueHint) 
+{
+    process *proc = ev.proc;
+    
+    if(! proc)
+        return true;
+  
+    dyn_lwp *rep_lwp = proc->getRepresentativeLWP();
+    assert(rep_lwp);  // the process based lwp should already be set
+
+    //We're starting up, convert the representative lwp to a real one.
+    rep_lwp->set_lwp_id((int) rep_lwp->get_fd());
+    proc->real_lwps[rep_lwp->get_lwp_id()] = rep_lwp;
+    proc->representativeLWP = NULL;
+    if (proc->theRpcMgr)
+       proc->theRpcMgr->addLWP(rep_lwp);
+    
+    if (proc->threads.size() == 0) {
+        dyn_thread *t = new dyn_thread(proc, 
+                                       0, // POS (main thread is always 0)
+                                       rep_lwp);
+    }
+    else {
+        proc->threads[0]->update_tid(ev.info.dwThreadId);
+        proc->threads[0]->update_lwp(rep_lwp);
+    }
+
+    proc->set_status(stopped);
+   proc->setBootstrapState(begun_bs);
+   if (proc->insertTrapAtEntryPointOfMain()) {
+     startup_printf("%s[%d]:  attached to process, stepping to main\n", FILE__, __LINE__);
+   }
+   else {
+     proc->handleProcessExit();
+   }
+   continueHint = true;
+   return true;
+}
+
+
+bool CALLBACK printMods(PCSTR name, DWORD64 addr, PVOID unused) {
+    fprintf(stderr, " %s @ %llx\n", name, addr);
+    return true;
+}
+
+bool SignalHandler::handleLoadLibrary(EventRecord &ev, bool &continueHint) 
+{
+   process *proc = ev.proc;
+
+   // obtain the name of the DLL
+   pdstring imageName = GetLoadedDllImageName( proc, ev.info );
+
+   parsing_printf("%s[%d]: load dll %s: hFile=%x, base=%x, debugOff=%x, debugSz=%d lpname=%x, %d\n",
+     __FILE__, __LINE__,
+     imageName.c_str(),
+     ev.info.u.LoadDll.hFile, ev.info.u.LoadDll.lpBaseOfDll,
+     ev.info.u.LoadDll.dwDebugInfoFileOffset,
+     ev.info.u.LoadDll.nDebugInfoSize,
+     imageName.c_str(),
+     ev.info.u.LoadDll.fUnicode,
+     GetFileSize(ev.info.u.LoadDll.hFile,NULL));
+   startup_printf("Loaded dll: %s\n", imageName.c_str());
+   
+   // This is NT's version of handleIfDueToSharedObjectMapping     
+   handleT procHandle = ev.lwp->getProcessHandle();
+
+   if (!imageName.length()) {
+     continueHint = true;
+     return true;
+   }
+
+   DWORD64 iresult = SymLoadModule64(procHandle, ev.info.u.LoadDll.hFile, 
+                                 (PSTR) imageName.c_str(), NULL,
+                                 (DWORD64) ev.info.u.LoadDll.lpBaseOfDll, 0);
+   if (!iresult) {
+       fprintf(stderr, "[%s:%u] - Couldn't SymLoadModule64\n");
+       printSysError(GetLastError());
+   }
+
+   fileDescriptor desc(imageName, 
+                       (Address)ev.info.u.LoadDll.lpBaseOfDll,
+                       (HANDLE)procHandle,
+                       ev.info.u.LoadDll.hFile, true, 
+                       (Address)ev.info.u.LoadDll.lpBaseOfDll);
+   
+   // discover structure of new DLL, and incorporate into our
+   // list of known DLLs
+   if (imageName.length() > 0) {
+       mapped_object *newobj = mapped_object::createMappedObject(desc, proc);
+       if (newobj)
+            proc->addASharedObject(newobj);        
+   }
+   
+   continueHint = true;
+   return true;
+}
+
+//Returns true if we need to 
+bool SignalGenerator::SuspendThreadFromEvent(LPDEBUG_EVENT ev, dyn_lwp *lwp) {
+    HANDLE hlwp;
+    if (ev->dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT) {
+        hlwp = ev->u.CreateThread.hThread;
+    }
+    else if (lwp) {
+        hlwp = lwp->get_fd();
+    }
+    else {
+        hlwp = lwp->proc()->getRepresentativeLWP()->get_fd();
+    }
+
+    int result = SuspendThread(hlwp);
+    if (result == -1) {
+        //Happens for thread exit events.
+        return false;        
+    }
+    return true;
+}
+// ccw 2 may 2001 win2k fixes
+// when you launch a process to be debugged with win2k (as in createProcess)
+// the system sends you back at least two debug events before starting the
+// process.  a debug event is also sent back for every dll that is loaded
+// prior to starting main(), these include ntdll.dll and kernel32.dll and any
+// other dlls the process needs that are not loaded with an explicit call
+// to LoadLibrary().
+//
+// dyninst catches the first debug event (CREATE_PROCESS) and initializes
+// various process specific data structures.  dyninst catches the second
+// debug event (an EXCEPTION_DEBUG_EVENT) and used this event as a trigger to
+// put in the bit of code that forced the mutatee to load
+// libdyninstAPI_RT.dll.  In win2k, this does not work.  The bit of code is
+// run and the trailing DebugBreak is caught and handled but the Dll will not
+// be loaded.  The EXCEPTION_DEBUG_EVENT must be handled and continued from
+// before LoadLibrary will perform correctly.
+//
+// the fix for this is to handle this EXCEPTION_DEBUG_EVENT, and put a
+// DebugBreak (0xcc) at the beginning of main() in the mutatee.  catching
+// that DebugBreak allows dyninst to write in the bit of code used to load
+// the libdyninstAPI_RT.dll.
+//
+// after this, dyninst previously instrumented the mutatee to force the
+// execution of DYNINSTinit() in the dll.  in order to take out this bit of
+// complexity, the DllMain() function in the dll, which is run upon loading
+// the dll, is used to automatically call DYNINSTinit().
+//
+// DYNINSTinit() takes two parameters, a flag denoting how dyninst attached
+// to this process and the pid of the mutator.  These are passed from the
+// mutator to the mutatee by finding a variable in the dll and writing the
+// correct values into the mutatee's address space.  When a Dll is loaded, a
+// LOAD_DLL debug event is thrown before the execution of DllMain(), so
+// dyninst catches this event, writes the necessary values into the mutatee
+// memory, then lets DllMain() call DYNINSTinit().  the DebugBreak() at the
+// end of DYNINSTinit() is now removed for NT/win2K
+//
+// the bit of code inserted to load the dll fires a DebugBreak() to signal
+// that it is done. dyninst catches this, patches up the code that was used
+// to load the dll, replaces what was overwritten in main() and resets the
+// instruction pointer (EIP) to the beginning of main().
+bool SignalGenerator::waitForEventsInternal(pdvector<EventRecord> &events) 
+{
+  static bool first_signal = true;
+  DWORD milliseconds = INFINITE;
+  EventRecord ev;
+
+  waitingForOS_ = true;
+  __UNLOCK;
+  bool result = WaitForDebugEvent(&ev.info, milliseconds);
+  __LOCK;
+  waitingForOS_ = false;
+  if (!result)
+  {
+    DWORD err = GetLastError();
+    if ((WAIT_TIMEOUT == err) || (ERROR_SEM_TIMEOUT == err)) {
+      //  apparently INFINITE milliseconds returns with SEM_TIMEOUT
+      //  This may be a problem, but it doesn't seem to break anything.
+      ev.type = evtTimeout;
+      events.push_back(ev);
+      return true;
+    }else {
+      printSysError(err);
+      fprintf(stderr, "%s[%d]:  Unexpected error from WaitForDebugEvent: %d\n",
+              __FILE__, __LINE__, err);
+    }
+    stopThreadNextIter();
+    return false;
+  }
+
+  process *proc = process::findProcess(ev.info.dwProcessId);
+  if (proc == NULL) {
+     /* this case can happen when we create a process, but then are unable
+        to parse the symbol table, and so don't complete the creation of the
+        process. We just ignore the event here.  */
+     ContinueDebugEvent(ev.info.dwProcessId, ev.info.dwThreadId, DBG_CONTINUE);
+     ev.type = evtNullEvent;
+     fprintf(stderr, "%s[%d][%s]:  no process yet...\n", FILE__, __LINE__, getThreadStr(getExecThreadID()));
+     events.push_back(ev);
+     return true;
+   }
+
+   ev.proc = proc;
+   dyn_thread *thr = proc->getThread(ev.info.dwThreadId);
+   ev.lwp = NULL;
+   if (thr) {
+       ev.lwp = thr->get_lwp();
+       proc->set_lwp_status(ev.lwp, stopped);
+   }
+   if (!ev.lwp && ev.proc->getRepresentativeLWP() &&
+       ev.info.dwDebugEventCode != CREATE_THREAD_DEBUG_EVENT) 
+   {
+       //Happens during process startup
+       ev.lwp = ev.proc->getRepresentativeLWP();
+       proc->set_lwp_status(ev.lwp, stopped);
+   }
+   if (!ev.lwp) {
+       //Happens during thread creation events
+       // the status will be set to stopped when we create
+       // the new lwp later.
+       ev.lwp = ev.proc->getInitialLwp();
+   }
+
+   signal_printf("[%s:%u] - Got event %d on %d (%d)\n", __FILE__, __LINE__, 
+           ev.info.dwDebugEventCode, ev.lwp->get_fd(), ev.info.dwThreadId);
+
+   Frame af = ev.lwp->getActiveFrame();
+   ev.address = (Address) af.getPC();
+
+   events.push_back(ev);
+   return true;
+}
+
+bool SignalGenerator::decodeEvents(pdvector<EventRecord> &events) {
+    bool result = true;
+    for (unsigned i=0; i<events.size(); i++) {
+        if (!decodeEvent(events[i]))
+            result = false;
+    }
+    return result;
+}
+
+bool SignalGenerator::decodeEvent(EventRecord &ev)
+{
+   bool ret = false;
+   switch (ev.info.dwDebugEventCode) {
+     case EXCEPTION_DEBUG_EVENT:
+        //ev.type = evtException;
+        ev.what = ev.info.u.Exception.ExceptionRecord.ExceptionCode;
+        ret = decodeException(ev);
+        break;
+     case CREATE_THREAD_DEBUG_EVENT:
+        ev.type = evtThreadCreate;
+        ret = true;
+        break;
+     case CREATE_PROCESS_DEBUG_EVENT:
+        //ev.type = evtNullEvent;
+        ev.type = evtProcessCreate;
+        ret = true;
+        break;
+     case EXIT_THREAD_DEBUG_EVENT:
+        ev.type = evtThreadExit;
+        requested_wait_until_active = true;
+        ret = true;
+        break;
+     case EXIT_PROCESS_DEBUG_EVENT:
+        ev.type = evtProcessExit;
+        ev.what = ev.info.u.ExitProcess.dwExitCode;
+        ev.status = statusNormal;
+        requested_wait_until_active = true;
+        ret = true;
+        break;
+     case LOAD_DLL_DEBUG_EVENT:
+        ev.type = evtLoadLibrary;
+        ev.what = SHAREDOBJECT_ADDED;
+        ret = true;
+        break;
+     case UNLOAD_DLL_DEBUG_EVENT:
+         signal_printf("WaitForDebugEvent returned UNLOAD_DLL_DEBUG_EVENT\n");
+         ev.type = evtUnloadLibrary;
+         ev.what = SHAREDOBJECT_REMOVED;
+         ret = true;
+         break;
+     default:
+        fprintf(stderr, "%s[%d]:  WARN:  unknown debug event\n", FILE__, __LINE__);
+        ev.type = evtNullEvent;
+        ret = true;
+        break;
+   };
+
+   // Due to NT's odd method, we have to call pause_
+   // directly (a call to pause returns without doing anything
+   // pre-initialization)
+   if (!requested_wait_until_active) {
+      bool success = SuspendThreadFromEvent(&(ev.info), ev.lwp);
+      if (success) {
+         if (!ContinueDebugEvent(ev.info.dwProcessId, ev.info.dwThreadId, DBG_CONTINUE)) {
+           printf("ContinueDebugEvent failed\n");
+           printSysError(GetLastError());
+         }
+      }
+   }
+
+  return ret;
+}
+
+bool SignalGenerator::decodeBreakpoint(EventRecord &ev) 
+{
+  char buf[128];
+  bool ret = false;
+  process *proc = ev.proc;
+
+  if (decodeIfDueToProcessStartup(ev)) {
+     ret = true;
+  }
+  else if (proc->getRpcMgr()->decodeEventIfDueToIRPC(ev)) {
+     signal_printf("%s[%d]:  BREAKPOINT due to RPC\n", FILE__, __LINE__);
+     ret = true;
+  }
+  else if (proc->trampTrapMapping.defines(ev.address)) {
+     ev.type = evtInstPointTrap;
+     ret = true;
+  }
+  else {
+     ev.type = evtProcessStop;
+     ret = true;
+  }
+
+  signal_printf("%s[%d]:  decodeSigTrap for %s, state: %s\n",
+                FILE__, __LINE__, ev.sprint_event(buf),
+                proc->getBootstrapStateAsString().c_str());
+
+  return ret;
+}
+
+bool SignalGenerator::decodeException(EventRecord &ev) 
+{
+   bool ret = false;
+   switch (ev.what) {
+     case EXCEPTION_BREAKPOINT: 
+        signal_printf("DECODE BREAKPOINT\n");
+        ret = decodeBreakpoint(ev);
+        break;
+     case EXCEPTION_ILLEGAL_INSTRUCTION:
+         fprintf(stderr, "%s[%d]:  ILLEGAL INSN\n", FILE__, __LINE__);
+     case EXCEPTION_ACCESS_VIOLATION:
+     {
+         Frame af = ev.lwp->getActiveFrame();
+         signal_printf("DECODE CRITICAL --  ILLEGAL INSN OR ACCESS VIOLATION\n");
+         ev.type = evtCritical;
+         ev.address = (eventAddress_t) ev.info.u.Exception.ExceptionRecord.ExceptionAddress;
+         ret = true;
+         break;
+     }
+     case EXCEPTION_SINGLE_STEP:
+         signal_printf("SINGLE STEP\n");
+         ev.type = evtDebugStep;
+         ev.address = (eventAddress_t) ev.info.u.Exception.ExceptionRecord.ExceptionAddress;
+         ret = true;
+         break;
+     default:
+        ev.type = evtSignalled;
+        requested_wait_until_active = true;
+        ret = true;
+        break;
+   }
+   return ret;
+}
+
+// already setup on this FD.
+// disconnect from controlling terminal 
+void OS::osDisconnect(void) {
+}
+
+bool process::setProcessFlags() {
+    return true;
+}
+
+bool process::unsetProcessFlags() {
+    return true;
+}
+
+
+/* continue a process that is stopped */
+bool dyn_lwp::continueLWP_(int /*signalToContinueWith*/) {
+   unsigned count;
+   signal_printf("[%s:%u] - continuing %d\n", __FILE__, __LINE__, get_fd());
+   count = ResumeThread((HANDLE)get_fd());
+   if (count == (unsigned) -1) {
+      fprintf(stderr, "[%s:%u] - Couldn't resume thread\n", __FILE__, __LINE__);
+      printSysError(GetLastError());
+      return false;
+   } else
+      return true;
+}
+
+
+/*
+   terminate execution of a process
+ */
+terminateProcStatus_t process::terminateProc_()
+{
+    OS::osKill(getPid());
+    return terminateSucceeded;
+}
+
+/*
+   pause a process that is running
+*/
+bool dyn_lwp::stop_() {
+   unsigned count = 0;
+   count = SuspendThread((HANDLE)get_fd());
+   if (count == (unsigned) -1)
+      return false;
+   else
+      return true;
+}
+
+bool process::dumpCore_(const pdstring) {
+    return false;
+}
+
+bool dyn_lwp::writeTextWord(caddr_t inTraced, int data) {
+   return writeDataSpace(inTraced, sizeof(int), (caddr_t) &data);
+}
+
+bool dyn_lwp::writeTextSpace(void *inTraced, u_int amount, const void *inSelf)
+{
+   return writeDataSpace(inTraced, amount, inSelf);
+}
+
+bool process::flushInstructionCache_(void *baseAddr, size_t size){ //ccw 25 june 2001
+   dyn_lwp *replwp = getInitialLwp();
+   return FlushInstructionCache((HANDLE)replwp->getProcessHandle(), baseAddr, size);
+}
+
+bool dyn_lwp::readTextSpace(void *inTraced, u_int amount, const void *inSelf) {
+   return readDataSpace(inTraced, amount, (void *)inSelf);
+}
+
+bool dyn_lwp::writeDataSpace(void *inTraced, u_int amount, const void *inSelf)
+{
+    DWORD nbytes;
+    handleT procHandle = getProcessHandle();
+    bool res = WriteProcessMemory((HANDLE)procHandle, (LPVOID)inTraced, 
+				  (LPVOID)inSelf, (DWORD)amount, &nbytes);
+    return res && (nbytes == amount);
+}
+
+
+bool dyn_lwp::readDataSpace(const void *inTraced, u_int amount, void *inSelf) {
+    DWORD nbytes;
+    handleT procHandle = getProcessHandle();
+    bool res = ReadProcessMemory((HANDLE)procHandle, (LPVOID)inTraced, 
+				 (LPVOID)inSelf, (DWORD)amount, &nbytes);
+    return res && (nbytes == amount);
+}
+
+bool dyn_lwp::waitUntilStopped() {
+   return true;
+}
+
+bool process::waitUntilStopped() {
+   return true;
+}
+
+int getNumberOfCPUs() {
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return info.dwNumberOfProcessors;
+}  
+
+
+Frame dyn_lwp::getActiveFrame()
+{
+  w32CONTEXT cont; //ccw 27 july 2000 : 29 mar 2001
+  
+  Address pc = 0, fp = 0, sp = 0;
+  
+  // we must set ContextFlags to indicate the registers we want returned,
+  // in this case, the control registers.
+  // The values for ContextFlags are defined in winnt.h
+  cont.ContextFlags = CONTEXT_CONTROL;
+  if (GetThreadContext((HANDLE)get_fd(), &cont))
+  {
+     fp = cont.Ebp;
+     pc = cont.Eip;
+     sp = cont.Esp;
+     return Frame(pc, fp, sp, proc_->getPid(), proc_, NULL, this, true);
+  }
+  printSysError(GetLastError());
+  return Frame();
+}
+
+bool Frame::setPC(Address newpc) {
+  fprintf(stderr, "Implement me! Changing frame PC from %x to %x\n",
+	  pc_, newpc);
+  return false;
+}
+
+bool dyn_lwp::getRegisters_(struct dyn_saved_regs *regs, bool includeFP) {
+   // we must set ContextFlags to indicate the registers we want returned,
+   // in this case, the control registers.
+   // The values for ContextFlags are defined in winnt.h
+   regs->cont.ContextFlags = w32CONTEXT_FULL;//ccw 27 july 2000 : 29 mar 2001
+   handleT handle = get_fd();
+   if (!GetThreadContext((HANDLE)handle, &(regs->cont)))
+   {
+      return false;
+   }
+   return true;
+}
+
+void dyn_lwp::dumpRegisters()
+{
+   dyn_saved_regs regs;
+   if (!getRegisters(&regs)) {
+     fprintf(stderr, "%s[%d]:  registers unavailable\n", FILE__, __LINE__);
+     return;
+   }
+}
+
+bool dyn_lwp::changePC(Address addr, struct dyn_saved_regs *regs)
+{    
+  w32CONTEXT cont;//ccw 27 july 2000
+  if (!regs) {
+      cont.ContextFlags = w32CONTEXT_FULL;//ccw 27 july 2000 : 29 mar 2001
+      if (!GetThreadContext((HANDLE)get_fd(), &cont))
+      {
+          printf("GetThreadContext failed\n");
+          return false;
+      }
+  }
+  else {
+      memcpy(&cont, &(regs->cont), sizeof(w32CONTEXT));
+  }
+  cont.Eip = addr;
+  if (!SetThreadContext((HANDLE)get_fd(), &cont))
+  {
+    printf("SethreadContext failed\n");
+    return false;
+  }
+  return true;
+}
+
+bool dyn_lwp::restoreRegisters_(const struct dyn_saved_regs &regs, bool includeFP) {
+  if (!SetThreadContext((HANDLE)get_fd(), &(regs.cont)))
+  {
+    //printf("SetThreadContext failed\n");
+    return false;
+  }
+  return true;
+}
+
+bool process::isRunning_() const {
+    // TODO
+    return true;
+}
+
+
+pdstring 
+process::tryToFindExecutable(const pdstring& iprogpath, int pid)
+{
+    if( iprogpath.length() == 0 )
+    {
+        HANDLE hProc = OpenProcess( PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                                    FALSE,
+                                    pid );
+        if( hProc != NULL )
+        {
+            // look at the process' modules to see if we can get at an EXE
+            DWORD nMods = 32;
+            DWORD cb = nMods * sizeof(HMODULE);
+            DWORD cbNeeded = 0;
+            HMODULE* hMods = new HMODULE[cb];
+            BOOL epmRet = EnumProcessModules( hProc,
+                                                hMods,
+                                                cb,
+                                                &cbNeeded );
+            if( !epmRet && (cbNeeded > cb) )
+            {
+                // we didn't pass a large enough array in
+                delete[] hMods;
+                nMods = (cbNeeded / sizeof(HMODULE));
+                cb = cbNeeded;
+                hMods = new HMODULE[cb];
+
+                epmRet = EnumProcessModules( hProc,
+                                                hMods,
+                                                cb,
+                                                &cbNeeded );
+            }
+
+            if( epmRet )
+            {
+                // we got modules
+                // look for the EXE (always first item?)
+                nMods = cbNeeded / sizeof(HMODULE);
+                for( unsigned int i = 0; i < nMods; i++ )
+                {
+                    char modName[MAX_PATH];
+
+                    BOOL gmfnRet = GetModuleFileNameEx( hProc,
+                                                        hMods[i],
+                                                        modName,
+                                                        MAX_PATH );
+                    if( gmfnRet )
+                    {
+                        // check if this is the EXE
+                        // TODO is this sufficient?
+                        // should we instead be recognizing the
+                        // "program" by some other criteria?
+                        unsigned int slen = strlen( modName );
+                        if( (modName[slen-4] == '.') &&
+                            ((modName[slen-3]=='E')||(modName[slen-3]=='e')) &&
+                            ((modName[slen-2]=='X')||(modName[slen-2]=='x')) &&
+                            ((modName[slen-1]=='E')||(modName[slen-1]=='e')) )
+                        {
+                            return modName;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            CloseHandle( hProc );
+        }
+    }
+    return iprogpath;
+}
+
+
+syscallTrap *process::trapSyscallExitInternal(Address syscall) {
+    // Don't support trapping syscalls here yet, sorry
+    return NULL;
+}
+
+bool process::clearSyscallTrapInternal(syscallTrap *trappedSyscall) {
+    assert(0 && "Unimplemented");
+    return true;
+}
+
+Address dyn_lwp::getCurrentSyscall() {
+    return 0;
+}
+
+bool dyn_lwp::stepPastSyscallTrap() {
+    return false;
+}
+
+Address dyn_lwp::readRegister(Register reg)
+{
+   w32CONTEXT *cont = new w32CONTEXT;//ccw 27 july 2000 : 29 mar 2001
+    if (!cont)
+	return NULL;
+    // we must set ContextFlags to indicate the registers we want returned,
+    // in this case, the control registers.
+    // The values for ContextFlags are defined in winnt.h
+    cont->ContextFlags = w32CONTEXT_FULL;//ccw 27 july 2000
+    if (!GetThreadContext((HANDLE)get_fd(), cont)) {
+      delete cont;
+	  return NULL;
+    }
+    return cont->Eax;
+}
+
+bool dyn_lwp::executingSystemCall() {
+   // TODO
+   return false;
+}
+
+
+void InitSymbolHandler( HANDLE hProcess )
+{
+}
+
+void
+ReleaseSymbolHandler( HANDLE hProcess )
+{
+    if( !SymCleanup( hProcess ) )
+    {
+        // TODO how to report error?
+        fprintf( stderr, "failed to release symbol handler: %x\n",
+            GetLastError() );
+    }
+
+    CloseHandle(hProcess);
+}
+
+bool SignalGenerator::waitForStopInline()
+{
+   return true;
+}
+/*****************************************************************************
+ * forkNewProcess: starts a new process, setting up trace and io links between
+ *                the new process and the daemon
+ * Returns true if succesfull.
+ * 
+ * Arguments:
+ *   file: file to execute
+ *   dir: working directory for the new process
+ *   argv: arguments to new process
+ *   inputFile: where to redirect standard input
+ *   outputFile: where to redirect standard output
+ *   traceLink: handle or file descriptor of trace link (read only)
+ *   ioLink: handle or file descriptor of io link (read only)
+ *   pid: process id of new process
+ *   tid: thread id for main thread (needed by WindowsNT)
+ *   procHandle: handle for new process (needed by WindowsNT)
+ *   thrHandle: handle for main thread (needed by WindowsNT)
+ ****************************************************************************/
+bool SignalGenerator::forkNewProcess()
+{
+    // create the child process    
+    pdstring args;
+    for (unsigned ai=0; ai<argv_->size(); ai++) {
+       args += (*argv_)[ai];
+       args += " ";
+    }
+
+    STARTUPINFO stinfo;
+    memset(&stinfo, 0, sizeof(STARTUPINFO));
+    stinfo.cb = sizeof(STARTUPINFO);
+
+    /*to do: output redirection
+    //stinfo.hStdOutput = (HANDLE)ioLink;
+    stinfo.hStdOutput = (HANDLE)stdout_fd;
+    stinfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    stinfo.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    stinfo.dwFlags |= STARTF_USESTDHANDLES;
+    */
+    PROCESS_INFORMATION procInfo;
+    if (CreateProcess(file_.c_str(), (char *)args.c_str(), 
+		      NULL, NULL, TRUE,
+		      DEBUG_PROCESS /* | CREATE_NEW_CONSOLE */ | CREATE_SUSPENDED ,
+		      NULL, dir_ == "" ? NULL : dir_.c_str(), 
+		      &stinfo, &procInfo)) 
+    {
+                  procHandle = (Word)procInfo.hProcess;
+                  thrHandle = (Word)procInfo.hThread;
+                  pid_ = (Word)procInfo.dwProcessId;
+                  tid = (Word)procInfo.dwThreadId;
+                  traceLink_ = -1;
+                  return true;    
+    }
+   
+   // Output failure message
+   LPVOID lpMsgBuf;
+
+   if (FormatMessage( 
+                     FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+                     NULL,
+                     GetLastError(),
+                     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), // Default language
+                     (LPTSTR) &lpMsgBuf,
+                     0,
+                     NULL 
+                     ) > 0) 
+    {
+      char *errorLine = (char *)malloc(strlen((char *)lpMsgBuf) +
+                                       file_.length() + 64);
+      if (errorLine != NULL) {
+         sprintf(errorLine, "Unable to start %s: %s\n", file_.c_str(),
+                 (char *)lpMsgBuf);
+         logLine(errorLine);
+         showErrorCallback(68, (const char *) errorLine);
+
+         free(errorLine);
+      }
+
+      // Free the buffer returned by FormatMsg
+      LocalFree(lpMsgBuf);    
+    } else {
+      char errorLine[512];
+      sprintf(errorLine, "Unable to start %s: unknown error\n",
+              file_.c_str());
+      logLine(errorLine);
+      showErrorCallback(68, (const char *) errorLine);
+    }
+
+   return false;
+}
+
+/*
+ * stripAtSuffix
+ *
+ * Strips off of a string any suffix that consists of an @ sign followed by
+ * decimal digits.
+ *
+ * str	The string to strip the suffix from.  The string is altered in place.
+ */
+static void stripAtSuffix(char *str)
+{
+    // many symbols have a name like foo@4, we must remove the @4
+    // just searching for an @ is not enough,
+    // as it may occur on other positions. We search for the last one
+    // and check that it is followed only by digits.
+    char *p = strrchr(str, '@');
+    if (p) {
+      char *q = p+1;
+      strtoul(p+1, &q, 10);
+      if (q > p+1 && *q == '\0') {
+	*p = '\0';
+      }
+    }
+}
+
+char *cplus_demangle(char *c, int, bool includeTypes) { 
+    char buf[1000];
+    if (c[0]=='_') {
+       // VC++ 5.0 seems to decorate C symbols differently to C++ symbols
+       // and the UnDecorateSymbolName() function provided by imagehlp.lib
+       // doesn't manage (or want) to undecorate them, so it has to be done
+       // manually, removing a leading underscore from functions & variables
+       // and the trailing "$stuff" from variables (actually "$Sstuff")
+       unsigned i;
+       for (i=1; i<sizeof(buf) && c[i]!='$' && c[i]!='\0'; i++)
+           buf[i-1]=c[i];
+       buf[i-1]='\0';
+       stripAtSuffix(buf);
+       if (buf[0] == '\0') return 0; // avoid null names which seem to annoy Paradyn
+       return strdup(buf);
+    } else {
+       if (includeTypes) {
+          if (UnDecorateSymbolName(c, buf, 1000, UNDNAME_COMPLETE| UNDNAME_NO_ACCESS_SPECIFIERS|UNDNAME_NO_MEMBER_TYPE|UNDNAME_NO_MS_KEYWORDS)) {
+            //   printf("Undecorate with types: %s = %s\n", c, buf);
+            stripAtSuffix(buf);
+            return strdup(buf);
+          }
+       }  else if (UnDecorateSymbolName(c, buf, 1000, UNDNAME_NAME_ONLY)) {
+         //     else if (UnDecorateSymbolName(c, buf, 1000, UNDNAME_COMPLETE|UNDNAME_32_BIT_DECODE)) {
+         //	printf("Undecorate: %s = %s\n", c, buf);
+         stripAtSuffix(buf);          
+         return strdup(buf);
+       }
+    }
+    return 0;
+}
+
+bool OS::osKill(int pid) {
+    bool res;
+    HANDLE h = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
+    if (h == NULL) {
+    	return false;
+    }
+    res = TerminateProcess(h,0);
+    CloseHandle(h);
+    return res;
+}
+
+bool SignalGeneratorCommon::getExecFileDescriptor(pdstring filename,
+                                    int pid,
+                                    bool,
+                                    int &status,
+                                    fileDescriptor &desc)
+{
+    assert(proc);
+    dyn_lwp *rep_lwp = proc->getRepresentativeLWP();
+    assert(rep_lwp);  // the process based lwp should already be set
+
+    if (proc->processHandle_ == INVALID_HANDLE_VALUE) {
+
+        if (!proc->wasCreatedViaAttach()) {
+           int res = ResumeThread(proc->sh->getThreadHandle());
+           if (res == -1) {
+             fprintf(stderr, "%s[%d]:  could not resume thread here\n", FILE__, __LINE__);
+             printSysError(GetLastError());
+           }
+        }
+
+       //  need to snarf up the next debug event, at which point we can get 
+       //  a handle to the debugged process.
+
+       DEBUG_EVENT snarf_event;
+       timed_out_retry:
+
+       if (!WaitForDebugEvent(&snarf_event, INFINITE))
+       {
+         fprintf(stderr, "%s[%d][%s]:  WaitForDebugEvent returned\n", 
+               FILE__, __LINE__, getThreadStr(getExecThreadID()));
+         DWORD err = GetLastError();
+         if ((WAIT_TIMEOUT == err) || (ERROR_SEM_TIMEOUT == err)) {
+           //  apparently INFINITE milliseconds returns with SEM_TIMEOUT
+           //  This may be a problem, but it doesn't seem to break anything.
+           goto timed_out_retry;
+         }else {
+           printSysError(err);
+           fprintf(stderr, "%s[%d]:  Unexpected error from WaitForDebugEvent: %d\n",
+                   __FILE__, __LINE__, err);
+         }
+         return false;
+       }
+
+       //  Now snarf_event should have the right handles set...
+
+       proc->processHandle_ = snarf_event.u.CreateProcessInfo.hProcess;
+       proc->mainFileHandle_ = snarf_event.u.CreateProcessInfo.hFile;
+       proc->mainFileBase_ = (Address)snarf_event.u.CreateProcessInfo.lpBaseOfImage;
+       proc->sh->thrHandle = (int) snarf_event.u.CreateProcessInfo.hThread;
+       proc->sh->procHandle = (int) snarf_event.u.CreateProcessInfo.hProcess;
+       char *imageName = (char *) snarf_event.u.CreateProcessInfo.lpImageName;
+
+       rep_lwp->setFileHandle(snarf_event.u.CreateProcessInfo.hThread);
+       if (NULL == snarf_event.u.CreateProcessInfo.hThread)
+         assert(0);
+       rep_lwp->setProcessHandle(snarf_event.u.CreateProcessInfo.hProcess);
+
+       if (proc->threads.size() == 0) {
+           dyn_thread *t = new dyn_thread(proc, 
+                                          0, // POS (main thread is always 0)
+                                          rep_lwp);
+           t->update_tid(snarf_event.dwThreadId);
+       }
+    
+       //This must be called on each process in order to use the 
+       // symbol/line-info reading API
+       bool result = SymInitialize(proc->processHandle_, NULL, FALSE);
+       if (!result) {
+           fprintf(stderr, "Couldn't SymInitialize\n");
+           printSysError(GetLastError());
+       } 
+       DWORD64 iresult = SymLoadModule64(proc->processHandle_, proc->mainFileHandle_,
+                                    imageName, NULL,
+                                    (DWORD64) proc->mainFileBase_, 0);
+       /*
+       int res = ResumeThread((HANDLE) proc->sh->thrHandle);
+       if (res == -1) {
+          fprintf(stderr, "%s[%d]:  could not resume thread here\n", FILE__, __LINE__);
+          printSysError(GetLastError());
+       }
+*/
+       if (!ContinueDebugEvent(snarf_event.dwProcessId, 
+                               snarf_event.dwThreadId, DBG_CONTINUE))
+       {
+         DebugBreak();
+         printf("ContinueDebugEvent failed\n");
+         printSysError(GetLastError());
+         return false;
+       }
+
+       proc->set_status(running);
+    }
+
+    desc = fileDescriptor(filename, 
+                        (Address) 0,
+                        (HANDLE) proc->processHandle_,
+                        (HANDLE) proc->mainFileHandle_, 
+                        false,
+                        (Address) proc->mainFileBase_);
+    return true;
+}
+
+
+bool getLWPIDs(pdvector <unsigned> &LWPids)
+{
+  assert (0 && "Not implemented");
+  return false;
+}
+//
+// This function retrieves the name of a DLL that has been
+// loaded in an inferior process.  On the desktop flavors
+// of Windows, the debug event that we get for loaded DLLs
+// includes the location of a pointer to the DLL's image name.
+// (Note the indirection.)  On Windows CE, the event contains
+// the location of the image name string, with no indirection.
+//
+// There are several complications to overcome when reading this string:
+//
+// 1.  There is no guarantee that the image name is available.
+//     In this case, the location in the debug event may be NULL,
+//     or the pointer in the inferior process' address space may be NULL.
+// 2.  The image name string may be either ASCII or Unicode.  Most of
+//     the Windows system DLLs have Unicode strings, but many user-built
+//     DLLs use single-byte strings.  If the string is Unicode, we need
+//     to copy it to our address space and convert it to a single-byte
+//     string because the rest of Paradyn/Dyninst has no clue what to
+//     do with Unicode strings.
+// 3.  We don't know how long the string is.  We have a loose upper
+//     bound in that we know it is not more than MAX_PATH characters.
+//     Unfortunately, the call we use to read from the inferior
+//     process' address space will return failure if we ask for more
+//     bytes than it can actually read (so we can't just issue a read
+//     for MAX_PATH characters).  Given this limitation, we have to
+//     try a read and check whether the read succeeded *and* whether
+//     we read the entire image name string.  If not, we have to adjust
+//     the amount we read and try again.
+//
+static pdstring GetLoadedDllImageName( process* p, const DEBUG_EVENT& ev )
+{
+    char *msgText = NULL;
+	pdstring ret;
+	void* pImageName = NULL;
+
+	if( ev.u.LoadDll.lpImageName != NULL )
+	{
+        msgText = new char[1024];	// buffer for error messages
+	    // On non-CE flavors of Windows, the address given in the debug
+        // event struct is the address of a pointer to the DLL name string.
+
+        if( !p->readDataSpace( ev.u.LoadDll.lpImageName, 4, &pImageName, false ) )
+        {
+            sprintf( msgText, "Failed to read DLL image name pointer: %d\n",
+            GetLastError() );
+            logLine( msgText );
+	    }
+    }
+	if( pImageName != NULL )
+	{
+		// we have the pointer to the DLL image name -
+		// now read the name
+
+		// allocate a conservatively-sized buffer
+		char* buf = new char[(MAX_PATH + 1) * sizeof(WCHAR)];
+		WCHAR* wbuf = (WCHAR*)buf;
+
+		// We don't know how long the image name actually is, but
+		// we do know that they tend not to be very long.
+		// Therefore, we use a scheme to try to minimize the number
+		// of reads needed to get the image name.
+		// We do reads within ranges, starting with [1,128] bytes,
+		// then [129,256] bytes, etc. up to MAX_PATH if necessary.
+		// Within each range, we do reads following a binary search
+		// algorithm.  For example, for the [1,128] range, we start
+		// by trying to read 128 bytes.  If that read fails, we
+		// try to half the number of bytes (i.e., 64).  If that
+		// read also fails, we continue to halve the read requests 
+		// until we find one that succeeds.
+		//
+		// When a read succeeds, we still may not have gotten the
+		// entire string.  So when reads start succeeding, we have to
+		// check the data we got for a null-terimated string.  If we didn't
+		// get the full string, we change the byte count to either
+		// move into the next higher range (if we were already reading
+		// the max within the current range) or we set it to a factor
+		// of 1.5 of the current byte count to try a value between the
+		// current succeeding read and one that had failed.
+		unsigned int loRead = 1;		// range boundaries
+		unsigned int hiRead = 128;
+		unsigned int cbRead = 128;		// number of bytes to read
+		unsigned int chunkRead = 64;	// amount to change cbRead if we fail
+										// we will not halve this before we read
+		bool gotString = false;
+		bool doneReading = false;
+		while( !doneReading )
+		{
+			// try the read with the current byte count
+			if( p->readDataSpace( pImageName, cbRead, buf, false ) )
+			{
+				// the read succeeded - 
+				// did we get the full string?
+				if( ev.u.LoadDll.fUnicode )
+				{
+					unsigned int cbReadIdx = cbRead / sizeof(WCHAR);
+					wbuf[cbReadIdx] = L'\0';
+					WCHAR* nulp = wcschr( wbuf, L'\0' );
+					assert( nulp != NULL );			// because we just NULL-terminated the string
+					gotString = (nulp != &(wbuf[cbReadIdx]));
+				}
+				else
+				{
+					buf[cbRead] = '\0';
+					char* nulp = strchr( buf, '\0' );
+					assert( nulp != NULL );			// because we just NULL-terminated the string
+					gotString = (nulp != &(buf[cbRead]));
+				}
+
+				if( gotString )
+				{
+					doneReading = true;
+				}
+				else
+				{
+					// we didn't get the full string
+					// we need to try a larger read
+					if( cbRead == hiRead )
+					{
+						// we were at the high end of the current range -
+						// move to the next range
+						loRead = hiRead + 1;
+						hiRead = loRead + 128 - 1;
+						chunkRead = 128;				// we will halve this before we read again
+						if( loRead > (MAX_PATH * sizeof(WCHAR)) )
+						{
+							// we've tried every range but still failed
+							doneReading = true;
+						}
+						else
+						{
+							cbRead = hiRead;
+						}
+					}
+					else
+					{
+						// we were within the current range -
+						// try something higher but still within the range
+						cbRead = cbRead + chunkRead;
+					}
+				}
+			}
+			else
+			{
+				// the read failed -
+				// we need to try a smaller read
+				if( cbRead > loRead )
+				{
+					unsigned int nextRead = cbRead - chunkRead;
+					if( nextRead == cbRead )
+					{
+						// we can't subdivide any further
+						doneReading = true;
+					}
+					else
+					{
+						cbRead = nextRead;
+					}
+				}
+				else
+				{
+					// there are no smaller reads to try in this range,
+					// and by induction, in any range.
+					doneReading = true;
+				}
+			}
+
+			// update the amount that we use to change the read request
+			chunkRead /= 2;
+		}
+
+		if( !gotString )
+		{
+			// this is a serious problem because some read 
+			// should've succeeded
+			sprintf( msgText, "Failed to read DLL image name - no read succeeded\n" );
+			logLine( msgText );
+		}
+		else
+		{
+			if( ev.u.LoadDll.fUnicode )
+			{
+				// the DLL path is a Unicode string
+				// we have to convert it to single-byte characters
+				char* tmpbuf = new char[MAX_PATH];
+
+				WideCharToMultiByte(CP_ACP,		// code page to use (ANSI)
+									0,			// flags
+									wbuf,		// Unicode string
+									-1,			// length of Unicode string (-1 => null-terminated)
+									tmpbuf,		// destination buffer
+									MAX_PATH,	// size of destionation buffer
+									NULL,		// default for unmappable chars
+									NULL);		// var to set when defaulting a char
+
+				// swap buffers so that buf points to the single-byte string
+				// when we're out of this code block
+				delete[] buf;
+				buf = tmpbuf;
+			}
+			ret = buf;
+		}
+
+		delete[] buf;
+	}
+	else
+	{
+		// we were given an image name pointer, but it was NULL
+		// this happens for some system DLLs, and if we attach to
+		// the process instead of creating it ourselves.
+		// However, it is very important for us to know about kernel32.dll,
+		// so we check for it specially.
+		//
+		// This call only changes the string parameter if the indicated file is
+		// actually kernel32.dll.
+		if (kludge_isKernel32Dll(ev.u.LoadDll.hFile, ret))
+            return ret;
+
+        //I'm embarassed to be writing this.  We didn't get a name for the image, 
+        // but we did get a file handle.  According to MSDN, the best way to turn
+        // a file handle into a file name is to map the file into the address space
+        // (using the handle), then ask the OS what file we have mapped at that location.
+        // I'm sad now.
+        
+        void *pmap = NULL;
+        HANDLE fmap = CreateFileMapping(ev.u.LoadDll.hFile, NULL, 
+                                        PAGE_READONLY, 0, 1, NULL);
+        if (fmap) {
+            pmap = MapViewOfFile(fmap, FILE_MAP_READ, 0, 0, 1);
+            if (pmap) {   
+                char filename[MAX_PATH+1];
+                int result = GetMappedFileName(GetCurrentProcess(), pmap, filename, MAX_PATH);
+                if (result)
+                    ret = pdstring(filename);
+                UnmapViewOfFile(pmap);
+            }
+            CloseHandle(fmap);
+        }
+	}
+
+	// cleanup
+    if (msgText)
+        delete[] msgText;
+
+	return ret;
+}
+
+bool dyn_lwp::realLWP_attach_() {
+   return true;
+}
+
+bool dyn_lwp::representativeLWP_attach_() {
+    if(proc_->wasCreatedViaAttach()) {
+        if (!DebugActiveProcess(getPid())) {
+            //printf("Error: DebugActiveProcess failed\n");
+            return false;
+        }
+    }
+    
+    // We either created this process, or we have just attached it.
+    // In either case, our descriptor already has a valid process handle.
+    setProcessHandle(proc()->processHandle_);
+    proc()->set_lwp_status(this, stopped);
+
+    return true;
+}
+
+void dyn_lwp::realLWP_detach_()
+{
+   assert(is_attached());  // dyn_lwp::detach() shouldn't call us otherwise
+   return;
+}
+
+void dyn_lwp::representativeLWP_detach_()
+{
+   assert(is_attached());  // dyn_lwp::detach() shouldn't call us otherwise
+   return;
+}
+
+// Insert a breakpoint at the entry of main()
+bool process::insertTrapAtEntryPointOfMain() {
+  mapped_object *aout = getAOut();
+  const Object &aout_obj = aout->parse_img()->getObject();
+  pdvector<int_function *> funcs;
+  Address brk_address;
+  Address min_addr = 0xffffffff;
+  Address max_addr = 0x0;
+  bool result;
+  unsigned char oldbyte;
+  const unsigned char trapInsn = 0xcc;
+  startup_printf("[%s:%u] - Asked to insert bp at entry point of main\n", 
+      __FILE__, __LINE__);
+  
+  if (main_function) {
+     Address addr = main_function->getAddress();
+     startup_printf("[%s:%u] - insertTrapAtEntryPointOfMain found main at %x\n",
+                    __FILE__, __LINE__, addr);
+     result = readDataSpace((void *) addr, sizeof(trapInsn), &oldbyte, false);
+     if (!result) {
+         fprintf(stderr, "Internal Error - Couldn't write breakpoint at top of main\n");
+         return false;
+     }
+     assert (oldbyte != trapInsn);
+     writeDataSpace((void *) addr, sizeof(trapInsn), (void *) &trapInsn);
+     main_breaks[addr] = oldbyte;
+     flushInstructionCache_((void *) addr, 1);
+     return true;
+  }
+
+  const pdvector<Address> &possible_mains = aout_obj.getPossibleMains();
+
+  for (unsigned i=0; i<possible_mains.size(); i++) {
+    brk_address = possible_mains[i] + aout->codeBase();
+    startup_printf("[%s:%u] - insertTrapAtEntryPointOfMain found potential main at %x\n",
+          __FILE__, __LINE__, brk_address);
+    result = this->readDataSpace((void *) brk_address, 1, &oldbyte, false);
+    if (!result)
+        continue;
+    main_breaks[brk_address] = oldbyte;
+    result = writeDataSpace((void *) brk_address, 1, (void *) &trapInsn);
+    assert(result);
+    if (brk_address > max_addr)
+        max_addr = brk_address;
+    if (brk_address < min_addr)
+        min_addr = brk_address;
+  }
+
+  if (max_addr >= min_addr)
+    flushInstructionCache_( (void*)min_addr, max_addr - min_addr + 1 );
+  return true;
+}
+
+// True if we hit the trap at the entry of main
+bool process::trapAtEntryPointOfMain(dyn_lwp *lwp, Address trapAddr) {
+    if (getBootstrapState() < begun_bs || getBootstrapState() > loadingRT_bs) return false;
+    if (!main_breaks.defines(trapAddr)) return false;
+
+    startup_printf("[%s:%u] - Hit possible main breakpoint at %x:\n", __FILE__, __LINE__, trapAddr);
+
+    //Set the last function we hit as a possible main
+    /*if (!main_function) {
+       main_function = this->findFuncByAddr(trapAddr);
+    }*/
+    main_brk_addr = trapAddr;
+
+    return true;
+}
+
+// Clean up after breakpoint in main() is hit
+bool process::handleTrapAtEntryPointOfMain(dyn_lwp *lwp)
+{
+    //Remove this trap
+    dictionary_hash<Address, unsigned char>::iterator iter = main_breaks.begin();
+    Address min_addr = 0xffffffff;
+    Address max_addr = 0x0;
+    for (; iter != main_breaks.end(); iter++) {
+        Address addr = iter.currkey();
+        unsigned char value = *(iter);
+
+        bool result = writeDataSpace((void *) addr, sizeof(unsigned char), &value);
+        if (!result) {
+            fprintf(stderr, "Unexpected Error.  Couldn't remove breakpoint from "
+                    "potential main at %x\n", addr);
+            continue;   
+        }
+        if (max_addr < addr)
+            max_addr = addr;
+        if (min_addr > addr)
+            min_addr = addr;
+    }
+    main_breaks.clear();
+
+    //Restore PC and flush instruction cache
+    flushInstructionCache_((void *)min_addr, max_addr - min_addr + 1);
+    lwp->changePC(main_brk_addr, NULL);
+
+    setBootstrapState(initialized_bs);
+    return true;
+}
+
+bool process::getDyninstRTLibName() {
+    // Set the name of the dyninst RT lib
+    if (dyninstRT_name.length() == 0) {
+        // Get env variable
+        if (getenv("DYNINSTAPI_RT_LIB") != NULL) {
+            dyninstRT_name = getenv("DYNINSTAPI_RT_LIB");
+        }
+        else {
+            pdstring msg = pdstring("Environment variable " +
+                           pdstring("DYNINSTAPI_RT_LIB") +
+                           " has not been defined for process ") +
+                           pdstring(getPid());
+            showErrorCallback(101, msg);
+            return false;
+        }
+    }
+    //Canonicalize name
+    char *sptr = strdup(dyninstRT_name.c_str());
+    for (unsigned i=0; i<strlen(sptr); i++)
+       if (sptr[i] == '/') sptr[i] = '\\';
+    dyninstRT_name = sptr;
+    free(sptr);
+           
+    if (_access(dyninstRT_name.c_str(), 04)) {
+        pdstring msg = pdstring("Runtime library ") + dyninstRT_name +
+                       pdstring(" does not exist or cannot be accessed!");
+        showErrorCallback(101, msg);
+        return false;
+    }
+
+    return true;
+}
+
+
+// Load the dyninst library
+bool process::loadDYNINSTlib()
+{
+    loadDyninstLibAddr = getAOut()->parse_img()->getObject().getEntryPoint() + getAOut()->getBaseAddress();
+    Address LoadLibAddr;
+    Symbol sym;
+
+    dyn_lwp *lwp;
+    lwp = getInitialLwp();
+ /*   if (lwp->status() == running) {
+       lwp->pauseLWP();
+    }*/
+
+    if (!getSymbolInfo("_LoadLibraryA@4", sym) &&
+        !getSymbolInfo("_LoadLibraryA", sym) &&
+        !getSymbolInfo("LoadLibraryA", sym))
+        {
+            printf("unable to find function LoadLibrary\n");
+            assert(0);
+        }
+    LoadLibAddr = sym.addr();
+    assert(LoadLibAddr);
+
+    char ibuf[BYTES_TO_SAVE];
+    memset(ibuf, '\0', BYTES_TO_SAVE);//ccw 25 aug 2000
+    char *iptr = ibuf;
+    strcpy(iptr, dyninstRT_name.c_str());
+    
+    // Code overview:
+    // Dynininst library name
+    //    Executable code begins here:
+    // Push (address of dyninst lib name)
+    // Call LoadLibrary
+    // Pop (cancel push)
+    // Trap
+    
+    // 4: give us plenty of room after the string to start instructions
+    int instructionOffset = strlen(iptr) + 4;
+    // Regenerate the pointer
+    iptr = &(ibuf[instructionOffset]);
+    
+    // At this point, the buffer contains the name of the dyninst
+    // RT lib. We now generate code to load this string into memory
+    // via a call to LoadLibrary
+    
+    // push nameAddr ; 5 bytes
+    *iptr++ = (char)0x68; 
+    // Argument for push
+    *(int *)iptr = loadDyninstLibAddr; // string at codeBase
+    iptr += sizeof(int);
+    
+    int offsetFromBufferStart = (int)iptr - (int)ibuf;
+    offsetFromBufferStart += 5; // Skip next instruction as well.
+    // call LoadLibrary ; 5 bytes
+    *iptr++ = (char)0xe8;
+    
+    // Jump offset is relative
+    *(int *)iptr = LoadLibAddr - (loadDyninstLibAddr + 
+                                  offsetFromBufferStart); // End of next instruction
+    iptr += sizeof(int);
+    
+    
+    // add sp, 4 (Pop)
+    *iptr++ = (char)0x83; *iptr++ = (char)0xc4; *iptr++ = (char)0x04;
+    
+    // int3
+    *iptr = (char)0xcc;
+    
+    int offsetToTrap = (int) iptr - (int) ibuf;
+
+    readDataSpace((void *)loadDyninstLibAddr, BYTES_TO_SAVE, savedCodeBuffer, false);
+    writeDataSpace((void *)loadDyninstLibAddr, BYTES_TO_SAVE, ibuf);
+    
+    flushInstructionCache_((void *)loadDyninstLibAddr, BYTES_TO_SAVE);
+    
+    dyninstlib_brk_addr = loadDyninstLibAddr + offsetToTrap;
+    
+    savedRegs = new dyn_saved_regs;
+
+    bool status = lwp->getRegisters(savedRegs);
+    assert(status == true);    
+    lwp->changePC(loadDyninstLibAddr + instructionOffset, NULL);
+    
+    setBootstrapState(loadingRT_bs);
+    return true;
+}
+
+
+
+// Not used on NT. We'd have to rewrite the
+// prototype to take a PC. Handled inline.
+// True if trap is from dyninst load finishing
+bool process::trapDueToDyninstLib(dyn_lwp *lwp) 
+{
+    if (!dyninstlib_brk_addr)
+       return false;
+    assert(lwp);
+    Frame active = lwp->getActiveFrame();
+    if (active.getPC() == dyninstlib_brk_addr ||
+        (active.getPC()-1) == dyninstlib_brk_addr)
+        return true;
+    return false;
+}
+
+
+
+// Cleanup after dyninst lib loaded
+bool process::loadDYNINSTlibCleanup(dyn_lwp *)
+{
+    // First things first: 
+    assert(savedRegs != NULL);
+    getInitialLwp()->restoreRegisters(*savedRegs);
+    delete savedRegs;
+    savedRegs = NULL;
+
+    writeDataSpace((void *) loadDyninstLibAddr,
+                   BYTES_TO_SAVE,
+                   (void *)savedCodeBuffer);
+
+    flushInstructionCache_((void *)getAOut()->codeAbs(), BYTES_TO_SAVE);
+
+    dyninstlib_brk_addr = 0;
+
+    return true;
+}
+
+void loadNativeDemangler() 
+{
+    // ensure we load line number information when we load
+    // modules, and give us mangled names
+    DWORD dwOpts = SymGetOptions();
+    dwOpts &= ~(SYMOPT_UNDNAME);
+    dwOpts |= SYMOPT_LOAD_LINES;
+    dwOpts &= ~(SYMOPT_DEFERRED_LOADS);
+    SymSetOptions(dwOpts);
+}
+
+
+Frame dyn_thread::getActiveFrameMT() {
+   return get_lwp()->getActiveFrame();
+}
+
+bool process::determineLWPs(pdvector<unsigned> &lwp_ids)
+{
+  dyn_lwp *lwp;
+  unsigned index;
+
+  dictionary_hash_iter<unsigned, dyn_lwp *> lwp_iter(real_lwps);
+  while (lwp_iter.next(index, lwp)) {
+      lwp_ids.push_back(lwp->get_lwp_id());
+  }
+  return true;
+}
+
+bool process::initMT()
+{
+   return true;
+}
+
+void dyninst_yield()
+{
+    SwitchToThread();
+}
+
+void OS::make_tempfile(char *name) {
+}
+
+bool OS::execute_file(char *file) {
+   STARTUPINFO s;
+   PROCESS_INFORMATION proc;
+   BOOL result;
+
+   ZeroMemory(&s, sizeof(s));
+   ZeroMemory(&proc, sizeof(proc));
+   s.cb = sizeof(s);
+
+   result = CreateProcess(NULL, file, NULL, NULL, FALSE, 0, NULL, NULL, 
+                          &s, &proc);
+   if (!result) {
+      fprintf(stderr, "Couldn't create %s - Error %d\n", file, GetLastError());
+      return false;
+   }
+
+   WaitForSingleObject(proc.hProcess, INFINITE);
+   CloseHandle(proc.hProcess);
+   CloseHandle(proc.hThread);
+   return true;
+}
+
+void OS::unlink(char *file) {
+   DeleteFile(file);
+}
+
+#if !defined(TF_BIT)
+#define TF_BIT 0x100
+#endif
+
+Address dyn_lwp::step_next_insn() {
+   CONTEXT context;
+   BOOL result;
+
+   singleStepping = true;
+   context.ContextFlags = CONTEXT_FULL;
+   result = GetThreadContext((HANDLE)get_fd(), &context);
+   if(!result) {
+      fprintf(stderr, "[%s:%u - step_next_insn] - Couldn't get thread context ", 
+              __FILE__, __LINE__);
+      return (Address) -1;
+   }
+
+   context.ContextFlags = CONTEXT_FULL;
+   context.EFlags |= TF_BIT ;
+   if(!SetThreadContext((HANDLE)get_fd(), &context))
+   if(!result) {
+      fprintf(stderr, "[%s:%u - step_next_insn] - Couldn't set thread context ", 
+              __FILE__, __LINE__);
+      return (Address) -1;
+   }
+   
+   continueLWP();
+
+   do {
+      if(proc()->hasExited()) 
+         return (Address) -1;
+      proc()->sh->waitForEvent(evtDebugStep);
+   } while (singleStepping);
+
+   return getActiveFrame().getPC();
+}
+
+void process::inferiorMallocConstraints(Address near, Address &lo, Address &hi,
+                                        inferiorHeapType /* type */ ) 
+{
+}
+
+void process::inferiorMallocAlign(unsigned &size)
+{
+  // 32 byte alignment
+  if (size % 32) {
+    size = (size & ~31) + 32;
+  }
+}
+
+/**
+ stdcall:
+   * C Naming - Name prefixed by a '_', followed by the name, then an '@',
+     followed by number of bytes in arguments.  
+     i.e. foo(int a, double b) = _foo@12
+   * C++ Naming - __stdcall
+   * Args - Arguments are passed on the stack.
+   * Cleanup - Callee cleans up the stack before returning
+ cdecl:
+   * C Naming - Name prefixed by a '_'
+   * C++ Naming - __cdecl in demangled name
+   * Args - Arguments are passed on the stack.
+   * Cleanup - Caller cleans up the stack after the return
+ fastcall:
+   * C Naming - Name prefixed by a '@', followed by the func name, then 
+     another '@', followed by the number of bytes in the arguments.  i.e.
+     foo(double a, int b, int c, int d) = @foo@20
+   * C++ Naming - __fastcall in the mangled name
+   * Args - First two arguments that are less than DWORD size are passed in ECX & EDX
+   * Cleanup - Callee cleans up the stack before returning
+ thiscall:
+   * C Naming - NA
+   * C++ Naming - __thiscall in the demangled name
+   * 'this' parameter is passed in ECX, others are passed in the stack
+   * Cleanup Callee cleans up the stack before returning
+ **/
+callType int_function::getCallingConvention() {
+    const char *name = symTabName().c_str();
+    const int buffer_size = 1024;
+    char buffer[buffer_size];
+    char *pos;
+
+    if (callingConv != unknown_call)
+        return callingConv;
+
+    if (!name) {
+        //Umm...
+        return unknown_call;
+    }
+
+    switch(name[0]) {
+        case '?':
+            //C++ Encoded symbol. Everything is stored in the C++ name 
+            // mangling scheme
+            UnDecorateSymbolName(name, buffer, buffer_size, 
+                UNDNAME_NO_ARGUMENTS | UNDNAME_NO_FUNCTION_RETURNS);
+            if (strstr(buffer, "__thiscall")) {
+                callingConv = thiscall_call;
+                return callingConv;
+            }
+            if (strstr(buffer, "__fastcall")) {
+                callingConv = fastcall_call;
+                return callingConv;
+            }
+            if (strstr(buffer, "__stdcall")) {
+                callingConv = stdcall_call;
+                return callingConv;
+            }
+            if (strstr(buffer, "__cdecl")) {
+                callingConv = cdecl_call;
+                return callingConv;
+            }
+            break;
+        case '_':
+          //Check for stdcall or cdecl
+          pos = strrchr(name, '@');
+          if (pos) {
+            callingConv = stdcall_call;
+            return callingConv;
+          }
+          else {
+            callingConv = cdecl_call;
+            return callingConv;
+          }
+          break;
+        case '@':
+          //Should be a fast call
+          pos = strrchr(name, '@');
+          if (pos) {
+             callingConv = fastcall_call;
+             return callingConv;
+          }
+          break;
+    }
+
+    //We have no idea what this call is.  We probably got an undecorated
+    // name.  If the function doesn't clean up it's own stack (doesn't 
+    // have a ret #) instruction, then it must be a cdecl call, as that's
+    // the only type that doesn't clean its own stack.
+    //If the function is part of a class, then it's most likely a thiscall,
+    // although that could be incorrect for a static function.  
+    //Otherwise let's guess that it's a stdcall.
+    if (!ifunc()->cleansOwnStack()) {
+        callingConv = cdecl_call;
+    }
+    else if (strstr(name, "::")) {
+        callingConv = thiscall_call;
+    }
+    else {
+        callingConv = stdcall_call;
+    }
+    return callingConv;
+}
+
+static void emitNeededCallSaves(codeGen &gen, Register reg, pdvector<Register> &extra_saves);
+static void emitNeededCallRestores(codeGen &gen, pdvector<Register> &saves);
+
+int Emitter32::emitCallParams(registerSpace *rs, codeGen &gen, 
+                   const pdvector<AstNode *> &operands, process *proc,
+                   int_function *target, const pdvector<AstNode *> &ifForks,
+                   pdvector<Register> &extra_saves, const instPoint *location,
+                   bool noCost)
+{
+    callType call_conven = target->getCallingConvention();
+    int estimatedFrameSize = 0;
+    pdvector <Register> srcs;
+    bool result;
+    Register ecx_target = 0, edx_target = 0;
+    const int num_operands = operands.size();
+
+    switch (call_conven) {
+        case unknown_call:
+        case cdecl_call:
+        case stdcall_call:
+            //Push all registers onto stack
+            for (unsigned u = 0; u < operands.size(); u++) {
+                srcs.push_back((Register)operands[u]->generateCode_phase2(proc, 
+                               rs, gen, noCost, ifForks, location));
+            }
+            break;
+        case thiscall_call:
+            //Allocate the ecx register for the 'this' parameter
+            if (num_operands) {
+              result = rs->allocateSpecificRegister(gen, REGNUM_ECX, false);
+              if (!result) {
+                  emitNeededCallSaves(gen, REGNUM_ECX, extra_saves);
+              }
+              ecx_target = (Register) operands[0]->generateCode_phase2(proc,
+                  rs, gen, noCost, ifForks, location);
+            }
+
+            //Push other registers onto the stack
+            for (unsigned u = 1; u < operands.size(); u++) {
+                srcs.push_back((Register)operands[u]->generateCode_phase2(proc, 
+                               rs, gen, noCost, ifForks, location));
+            }     
+            break;
+        case fastcall_call:
+            if (num_operands) {
+                //Allocate the ecx register for the first parameter
+                result = rs->allocateSpecificRegister(gen, REGNUM_ECX, false);
+                if (!result) {
+                    emitNeededCallSaves(gen, REGNUM_ECX, extra_saves);
+                }
+            }
+            if (num_operands > 1) {
+               //Allocate the edx register for the second parameter
+               result = rs->allocateSpecificRegister(gen, REGNUM_EDX, false);
+               if (!result) {
+                  emitNeededCallSaves(gen, REGNUM_EDX, extra_saves);
+               }
+            }
+            if (num_operands) {
+              ecx_target = (Register) operands[0]->generateCode_phase2(proc,
+                  rs, gen, noCost, ifForks, location);
+            }
+            if (num_operands > 1) {
+              edx_target = (Register) operands[1]->generateCode_phase2(proc,
+                  rs, gen, noCost, ifForks, location);
+            }
+
+            //Push other registers onto the stack
+            for (unsigned u = 2; u < operands.size(); u++) {
+                srcs.push_back((Register)operands[u]->generateCode_phase2(proc, 
+                               rs, gen, noCost, ifForks, location));
+            }
+            break;
+        default:
+            fprintf(stderr, "Internal error.  Unknown calling convention\n");
+            assert(0);
+    }
+
+    // push arguments in reverse order, last argument first
+    // must use int instead of unsigned to avoid nasty underflow problem:
+    for (int i=srcs.size() - 1; i >= 0; i--) {
+        emitOpRMReg(PUSH_RM_OPC1, REGNUM_EBP, -( (int) srcs[i]*4), PUSH_RM_OPC2, gen);
+        estimatedFrameSize += 4;
+        rs->freeRegister(srcs[i]);
+    }
+
+    if (ecx_target) {
+        //Store the parameter in ecx
+        emitMovRMToReg(REGNUM_ECX, REGNUM_EBP, -4 * ecx_target, gen);
+    }
+
+    if (edx_target) {
+        //Store the parameter in edx
+        emitMovRMToReg(REGNUM_EDX, REGNUM_EBP, -4 * edx_target, gen);
+        /*if (edx_target != REGNUM_EDX) {
+            emitMovRegToReg(REGNUM_EDX, edx_target, gen);
+        }*/
+    }
+    return estimatedFrameSize;
+}
+
+bool Emitter32::emitCallCleanup(codeGen &gen, process *p, int_function *target, 
+                     int frame_size, pdvector<Register> &extra_saves)
+{
+    callType call_conv = target->getCallingConvention();
+    if ((call_conv == unknown_call || call_conv == cdecl_call) && frame_size)
+    {
+        //Caller clean-up
+        emitOpRegImm(0, REGNUM_ESP, frame_size, gen); // add esp, frame_size        
+    }
+
+    //Restore extra registers we may have saved when storing parameters in
+    // specific registers
+    emitNeededCallRestores(gen, extra_saves);
+    return 0;
+}
+
+static void emitNeededCallSaves(codeGen &gen, Register regi, 
+                           pdvector<Register> &extra_saves)
+{
+    extra_saves.push_back(regi);
+    switch (regi) {
+        case REGNUM_EAX:
+            emitSimpleInsn(PUSHEAX, gen);
+            break;
+        case REGNUM_EBX:
+            emitSimpleInsn(PUSHEBX, gen);
+            break;
+        case REGNUM_ECX:
+            emitSimpleInsn(PUSHECX, gen);
+            break;
+        case REGNUM_EDX:
+            emitSimpleInsn(PUSHEDX, gen);
+            break;
+        case REGNUM_EDI:
+            emitSimpleInsn(PUSHEDI, gen);
+            break;
+    }
+}
+
+static void emitNeededCallRestores(codeGen &gen, pdvector<Register> &saves)
+{
+    for (unsigned i=0; i<saves.size(); i++) {
+      switch (saves[i]) {
+          case REGNUM_EAX:
+              emitSimpleInsn(POP_EAX, gen);
+              break;
+          case REGNUM_EBX:
+              emitSimpleInsn(POP_EBX, gen);
+              break;
+          case REGNUM_ECX:
+              emitSimpleInsn(POP_ECX, gen);
+              break;
+          case REGNUM_EDX:
+              emitSimpleInsn(POP_EDX, gen);
+              break;
+          case REGNUM_EDI:
+              emitSimpleInsn(POP_EDI, gen);
+              break;
+      }
+    }
+    saves.clear();
+}
+
+bool SignalHandler::handleProcessExitPlat(EventRecord &ev, bool &continueHint) 
+{
+    ReleaseSymbolHandler(ev.proc->processHandle_);
+    continueHint = false;
+    ev.proc->continueHandles.push_back(ev.info.dwThreadId);
+    ev.proc->continueTypes.push_back(DBG_CONTINUE);
+    return true;
+}
+
+bool process::continueProc_(int sig) {
+    unsigned index;
+    dyn_lwp *lwp;
+    if (representativeLWP) {
+        representativeLWP->continueLWP(true);
+    }
+    dictionary_hash_iter<unsigned, dyn_lwp *> lwp_iter(real_lwps);
+    while (lwp_iter.next(index, lwp)) {
+        lwp->continueLWP(true);
+    }
+    return true;
+}
+
+bool process::stop_(bool waitUntilStop) {
+   unsigned index;
+   dyn_lwp *lwp;
+   if (representativeLWP) {
+       representativeLWP->pauseLWP(true);
+   }
+   dictionary_hash_iter<unsigned, dyn_lwp *> lwp_iter(real_lwps);
+   while (lwp_iter.next(index, lwp)) {
+       lwp->pauseLWP(true);
+   }
+   return true;
+}
+
+void process::deleteThread_(dyn_thread *thr) {
+    int hand = thr->get_tid();
+    int contType = DBG_CONTINUE;
+
+    continueHandles.push_back(hand);
+    continueTypes.push_back(contType);
+}
+
+bool SignalGeneratorCommon::postSignalHandler() {
+    for (unsigned i=0; i<proc->continueHandles.size(); i++) {
+        ContinueDebugEvent(proc->getPid(), proc->continueHandles[i], proc->continueTypes[i]);
+    }
+    proc->continueHandles.clear();
+    proc->continueTypes.clear();
+    return true;
+}
+
+bool SignalHandler::forwardSigToProcess(EventRecord &ev, bool &continueHint) 
+{
+   process *proc = ev.proc;
+   int hand = (int) ev.info.dwThreadId;
+
+   proc->continueHandles.push_back(hand);
+   proc->continueTypes.push_back(DBG_EXCEPTION_NOT_HANDLED);
+   
+   if (getExecThreadID() != sg->getThreadID()) {
+      signal_printf("%s[%d][%s]:  signalling active process\n", 
+                    FILE__, __LINE__, getThreadStr(getExecThreadID()));
+      sg->requested_wait_until_active = false;
+      sg->signalActiveProcess();
+   }
+   return true;
+}
+
+SignalGenerator::SignalGenerator(char *idstr, pdstring file, int pid)
+    : SignalGeneratorCommon(idstr)
+{
+    setupAttached(file, pid);
+} 
+
+void EventRecord::clear() {
+    proc = NULL;
+    lwp = NULL;
+    type = evtUndefined;
+    what = 0;
+    status = statusUnknown;
+    info.dwDebugEventCode = 0;
+    info.dwProcessId = 0;
+    info.dwThreadId = 0;
+    address = 0;
+    fd = 0;
+}
+
+// Unix functions that aren't needed on Windows
+void DBICallbackBase::dbi_signalCompletion(CallbackBase *cbb) {}
+bool DBICallbackBase::execute() { return false; }
+bool DBICallbackBase::waitForCompletion() { return false; }
+bool PtraceCallback::execute_real() {return false;}
+bool ReadDataSpaceCallback::execute_real() {return false;}
+bool WaitPidNoBlockCallback::execute_real() {return false;}
+bool WriteDataSpaceCallback::execute_real() {return false;}
+
+bool OS::executableExists(pdstring &file) {
+   struct stat file_stat;
+   int stat_result;
+
+   stat_result = stat(file.c_str(), &file_stat);
+   if (stat_result == -1)
+       stat_result = stat((file + pdstring(".exe")).c_str(), &file_stat);
+   return (stat_result != -1);
+}
+
+int_function *dyn_thread::map_initial_func(int_function *ifunc) {
+    if (!ifunc || strcmp(ifunc->prettyName().c_str(), "mainCRTStartup"))
+        return ifunc;
+
+    //mainCRTStartup is not a real initial function.  Use main, if it exists.
+    const pdvector<int_function *> *mains = proc->getAOut()->findFuncVectorByPretty("main");
+    if (!mains || !mains->size())
+        return ifunc;
+    return (*mains)[0];
+}
+
+bool process::instrumentThreadInitialFunc(int_function *f) {
+    if (!f)
+        return false;
+
+    for (unsigned i=0; i<initial_thread_functions.size(); i++) {
+        if (initial_thread_functions[i] == f)   
+            return true;
+    }
+
+    int_function *dummy_create = findOnlyOneFunction("DYNINST_dummy_create");
+    if (!dummy_create)
+    {
+      return false;
+    } 
+
+    pdvector<AstNode *> args;
+    AstNode call_dummy_create(dummy_create, args);
+    AstNode *ast = &call_dummy_create;
+    const pdvector<instPoint *> &ips = f->funcEntries();
+    for (unsigned j=0; j<ips.size(); j++)
+    {
+       miniTramp *mt;
+       mt = ips[j]->instrument(ast, callPreInsn, orderFirstAtPoint, false, 
+                               false);
+       if (!mt)
+       {
+          fprintf(stderr, "[%s:%d] - Couldn't instrument thread_create\n",
+                  __FILE__, __LINE__);
+       }
+    }
+    initial_thread_functions.push_back(f);
+    return true;
+}
+
+bool SignalHandler::handleProcessAttach(EventRecord &ev, bool &continueHint) {
+    process *proc = ev.proc;
+    proc->setBootstrapState(initialized_bs);
+    
+    dyn_lwp *rep_lwp = proc->getRepresentativeLWP();
+    assert(rep_lwp);
+
+    //We're starting up, convert the representative lwp to a real one.
+    rep_lwp->set_lwp_id((int) rep_lwp->get_fd());
+    proc->real_lwps[rep_lwp->get_lwp_id()] = rep_lwp;
+    proc->representativeLWP = NULL;
+    if (proc->theRpcMgr)
+       proc->theRpcMgr->addLWP(rep_lwp);
+    continueHint = true;
+
+    return true;
+}

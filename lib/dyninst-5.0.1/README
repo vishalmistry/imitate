@@ -1,0 +1,137 @@
+        *** Dyninst 5.0.1 Release Notes ***
+
+This is a stability and bug fixing Dyninst release that also includes extended compiler for AMD64.  Dyninst now supports mutatees that are compiled with the Intel and Portland Group compilers and the AMD64/EMT64 platform.
+
+Bug fixes include:
+* Fixes segfaults when parsing line information and DWARF type information.
+* Fixes for instrumenting stripped binaries on AMD-64.
+* Fixes a fork handling bug that sometimes left forked children permanently stopped.
+* Fixes a race condition that could hang up Dyninst when a new thread is created.
+* Improved error handling when dealing with BPatch_module objects.
+
+        *** Dyninst 5.0 Release Notes ***
+
+This is the version 5.0 release of the Dyninst API.  Currently, the API
+library is available for the Sparc/Solaris, POWER/AIX, x86/Linux,
+x86/Windows XP/2000/2003, Alpha/Tru64 Unix, ia64/Linux, and x86_64/Linux 
+platforms.
+
+Documentation for the API can be found at:
+
+    http://www.dyninst.org/
+
+The core/dyninstAPI/tests directory contains the source code for programs
+that test the API functions.  These programs are useful as examples of how
+to use the API.  See the README file in that directory for how to run or
+rebuild them.
+
+Setting up the environment
+--------------------------
+
+Before compiling or using the Dyninst API library, you should set the
+environment variables PLATFORM and DYNINST_ROOT.  PLATFORM should be set to
+one of the following values depending upon what operating system you are
+running on:
+
+    alpha-dec-osf5.1		Tru64 Unix on the Alpha processor
+    i386-unknown-linux2.4	Linux 2.4/2.6 on an Intel x86 processor
+    i386-unknown-nt4.0		Windows XP/2000/2003 on an Intel x86 processor
+    ia64-unknown-linux2.4	Linux 2.4/2.6 on an IA-64 processor
+    rs6000-ibm-aix5.1		AIX Version 5.1
+    sparc-sun-solaris2.9	Solaris 2.9 on a SPARC processor
+    x86_64-unknown-linux2.4     Linux 2.4/2.6 on an AMD-64 processor
+
+DYNINST_ROOT should be set to the pathname of the top of the library
+directory tree (dyninstAPI-v5.0).
+
+DYNINSTAPI_RT_LIB should be set to the full pathname of the file
+libdyninstAPI_RT.so.1 (on Windows, libdyninstAPI_RT.dll).  If you have
+correctly set the DYNINST_ROOT and PLATFORM environment variables, then the
+proper pathname is:
+
+    $DYNINST_ROOT/$PLATFORM/lib/libdyninstAPI_RT.so.1 (UNIX)
+    %DYNINST_ROOT%/i386-unknown-nt4.0/lib/libdyninstAPI_RT.dll (Windows)
+
+On Unix-based systems, you will also need to add $DYNINST_ROOT/$PLATFORM/lib
+to your LD_LIBRARY_PATH environment variable (LIBPATH on AIX,
+LD_LIBRARY64_PATH on Irix).  On Windows, you will instead need to add
+%DYNINST_ROOT%/i386-unknown-nt4.0/lib to your PATH environment variable.  
+This is so that mutator applications can be linked dynamically with the
+Dyninst library.
+
+Notes on Using Dyninst with Linux
+---------------------------------
+
+On Linux, Dyninst requires some libraries that are not installed by default
+in most distributions.  The first is libelf, which is included with most
+distributions and can be installed using the distribution's package manager.
+The second is libdwarf.  You can get the latest source code distribution
+of libdwarf from http://reality.sgiweb.org/davea/.  RPM files for libdwarf
+are also available from various sites.  Lastly, for IA-64, libunwind must
+be installed, which can be found at 
+http://www.hpl.hp.com/research/linux/libunwind/.
+
+Building the Dyninst API from source
+------------------------------------
+
+If you downloaded the source distribution of this package, you can build the
+Dyninst API libraries by running "make" in the core directory (one level up
+from where this README file is located), assuming your environment is set up
+as described above.  On Unix platforms, you must use GNU make.  The top-level
+makefile contains directives for compiling the Paradyn parallel performance
+tool, from which the Dyninst API was derived.  If you have downloaded only the
+Dyninst API, you will see a number of messages about missing directories.
+These directories are needed only for making Paradyn, so you should ignore
+these messages.  If you downloaded the entire Paradyn distribution, you can
+make only the API libraries by running "make DyninstAPI" in the core
+directory.
+
+-----------------------------------------------------------------------------
+
+This software is derived from the Paradyn system and therefore subject to
+the same copyright.  A copy of the Paradyn copyright appears at the end of
+this file.
+
+	The Dyninst API Team
+	6/23/2006
+
+----------------------- Start of Paradyn Copyright --------------------------
+Copyright (c) 1996 Barton P. Miller
+
+We provide the Paradyn Parallel Performance Tools (below
+described as "Paradyn") on an AS IS basis, and do not warrant its
+validity or performance.  We reserve the right to update, modify,
+or discontinue this software at any time.  We shall have no
+obligation to supply such updates or modifications or any other
+form of support to you.
+
+This license is for research uses.  For such uses, there is no
+charge. We define "research use" to mean you may freely use it
+inside your organization for whatever purposes you see fit. But you
+may not re-distribute Paradyn or parts of Paradyn, in any form
+source or binary (including derivatives), electronic or otherwise,
+to any other organization or entity without our permission.
+
+(for other uses, please contact us at paradyn@cs.wisc.edu)
+
+All warranties, including without limitation, any warranty of
+merchantability or fitness for a particular purpose, are hereby
+excluded.
+
+By your use of Paradyn, you understand and agree that we (or any
+other person or entity with proprietary rights in Paradyn) are
+under no obligation to provide either maintenance services,
+update services, notices of latent defects, or correction of
+defects for Paradyn.
+
+Even if advised of the possibility of such damages, under no
+circumstances shall we (or any other person or entity with
+proprietary rights in the software licensed hereunder) be liable
+to you or any third party for direct, indirect, or consequential
+damages of any character regardless of type of action, including,
+without limitation, loss of profits, loss of use, loss of good
+will, or computer failure or malfunction.  You agree to indemnify
+us (and any other person or entity with proprietary rights in the
+software licensed hereunder) for any and all liability it may
+incur to third parties resulting from your use of Paradyn.
+
