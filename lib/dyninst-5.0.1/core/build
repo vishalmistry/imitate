@@ -1,0 +1,36 @@
+#!/bin/sh
+
+COMMAND=$1
+
+if [ "$COMMAND" != "build" ] && [ "$COMMAND" != "prepare" ]; then
+	echo "Usage: $0 <prepare|build>"
+	exit
+fi
+
+# Rename the "List2" files to their original name
+if [ -f common/h/List2.h ]; then
+	echo "Moving common/h/List2.h --> common/h/List.h"
+	mv common/h/List2.h common/h/List.h
+fi
+
+if [ -f common/src/List2.C ]; then
+	echo "Moving common/src/List2.C --> common/src/List.C"
+	mv common/src/List2.C common/src/List.C
+fi
+
+# Build the library
+if [ "$COMMAND" != "prepare" ]; then
+	make DyninstAPI
+fi
+
+# Rename them back to source control name
+if [ -f common/h/List.h ]; then
+        echo "Moving common/h/List.h --> common/h/List2.h"
+        mv common/h/List.h common/h/List2.h
+fi
+
+if [ -f common/src/List.C ]; then
+        echo "Moving common/src/List.C --> common/src/List2.C"
+        mv common/src/List.C common/src/List2.C
+fi
+
