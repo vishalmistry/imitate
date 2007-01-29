@@ -1,6 +1,7 @@
+MODULE = imitate
 EXTRA_CFLAGS = -DDEBUG -DSYS_CALL_TABLE_ADDR=0xc02df4c0
 
-obj-m += imitate.o
+obj-m += $(MODULE).o
 
 all:
 	./build_type_defs.rb /usr/src/linux-headers-$(shell uname -r)/include/linux/syscalls.h syscall_types.h
@@ -8,12 +9,12 @@ all:
 	rm -f *~ *.o *.mod.c *.mod.o .*.cmd
 	rm -rf .tmp_versions
 
-install: uninstall imitate.ko
-	insmod imitate.ko
+install: $(MODULE).ko
+	./install.sh $(MOD_ARGS)
 
 uninstall:
 	sync
-	rmmod imitate
+	rmmod $(MODULE)
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
