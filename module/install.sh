@@ -23,5 +23,5 @@ mknod /dev/${device}0 c $major 0
 group="users"
 
 chgrp ${group} /dev/${device}0
-chown ${mode} /dev/${device}0
+chmod ${mode} /dev/${device}0
 
