@@ -39,7 +39,7 @@
 /*
  * Temporary!!! Buffer size of syscall storage (20 MB)
  */
-#define SYSCALL_BUFFER_SIZE 20971520
+#define SYSCALL_BUFFER_SIZE 4096
 
 /*
  * Debug message macros
@@ -149,7 +149,7 @@ MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " charact
 /*
  * General Prototypes
  */
-static void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len);
+void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len);
 
 
 asmlinkage long handle_sys_exit(int error_code)
@@ -416,7 +416,7 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
 {
     char *syscall_data = processes[current->pid]->monitor->syscall_data;
 
-    struct page *page = vmalloc_to_page(&(syscall_data[address - vma->vm_start]));
+    struct page *page = vmalloc_to_page(&(syscall_data[(address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT)]));
     get_page(page);
     return page;
 }
@@ -424,7 +424,7 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
 /*
  * Helper functions
  */
-static void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
+void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
 {
     monitor_t *proc_mon = processes[current->pid]->monitor;
     syscall_log_entry_t* current_data;

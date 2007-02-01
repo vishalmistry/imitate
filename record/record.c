@@ -38,6 +38,11 @@ int main(int argc, char* argv[])
     pid_t app_pid;
     FILE* arguments_file, syscall_file, sched_file;
     char* syscall_log;
+    struct
+    {
+        unsigned short call_no;
+        int ret_val;
+    } *log_entry;
 
     /* Verify arguments */
     if (argc < 1)
@@ -96,7 +101,7 @@ int main(int argc, char* argv[])
         goto error_after_dev;
     }
 
-    if ((syscall_log = (char*) mmap(NULL, 20971520, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
+    if ((syscall_log = (char*) mmap(NULL, 4096, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
     {
         perror("Memory mapping system call log");
     }
@@ -124,8 +129,10 @@ int main(int argc, char* argv[])
     }
 
     waitpid(app_pid, &i, NULL);
+    
+    log_entry = syscall_log;
 
-    printf("%d %d", (unsigned short)(syscall_log[0]), (int) (syscall_log[2]));
+    printf("%d %d", log_entry->call_no, log_entry->ret_val);
 
     close(dev);
 
