@@ -14,44 +14,8 @@
 #include <linux/mm.h>
 #include <asm/uaccess.h>
 #include "syscall_types.h"
-#include "imitate.h"
-
-/*
- * Module name for logging
- */
-#define MODULE_NAME "imitate"
-
-/*
- * Character device parameters
- */
-#define DEVICE_NAME    "imitate"
-#define DEVICE_MINOR   0
-#define DEVICE_NR_DEVS 1
-
-/*
- * Monitored process modes
- */
-#define MODE_NULL       0
-#define MODE_RECORD     1
-#define MODE_REPLAY     2
-#define MODE_MONITOR    3
-
-/*
- * Temporary!!! Buffer size of syscall storage (20 MB)
- */
-#define SYSCALL_BUFFER_SIZE 4096
-
-/*
- * Debug message macros
- */
-#ifdef DEBUG
-#define DLOG(msg, args...) (printk(KERN_DEBUG MODULE_NAME " (debug): " msg "\n", ##args))
-#else
-#define DLOG(msg, args...) /* No Message */
-#endif
-
-#define LOG(msg, args...) (printk(KERN_INFO MODULE_NAME ": " msg "\n", ##args))
-#define ERROR(msg, args...) (printk(KERN_ERR MODULE_NAME ": " msg "\n", ##args))
+#include "include/imitate.h"
+#include "imitate_private.h"
 
 /*
  * Module information
@@ -59,44 +23,6 @@
 MODULE_AUTHOR("Vishal Mistry <vishal@digitalsilver.org>");
 MODULE_DESCRIPTION("Kernel portion of the Imitate record/replay framework");
 MODULE_LICENSE("GPLv2");
-
-/*
- * Type definition of a system call
- */
-typedef void *syscall_t;
-
-/*
- * Monitor process struct
- */
-typedef struct
-{
-    unsigned long syscall_offset;
-    unsigned long sched_offset;
-    char *syscall_data;
-    char *sched_data;
-    struct semaphore syscall_sem;
-} monitor_t;
-
-/*
- * Process struct
- */
-typedef struct
-{
-    pid_t pid;
-    char mode;
-    monitor_t *monitor;
-} process_t;
-
-/*
- * System call log entry
- */
-typedef struct
-{
-    unsigned short call_no;
-    int return_value;
-    unsigned long out_param_len;
-    char out_param;
-} syscall_log_entry_t;
 
 /*
  * System call table and the backup
@@ -118,6 +44,7 @@ static struct cdev cdev;
  * Character device operations
  */
 static int cdev_open(struct inode *inode, struct file *filp);
+static int cdev_release(struct inode *inode, struct file *filp);
 static ssize_t cdev_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset);
 static int cdev_mmap(struct file *filp, struct vm_area_struct *vma);
 static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg);
@@ -125,6 +52,7 @@ static struct file_operations fops =
 {
     .owner   = THIS_MODULE,
     .open    = cdev_open,
+    .release = cdev_release,
     .read    = cdev_read,
     .mmap    = cdev_mmap,
     .ioctl   = cdev_ioctl
@@ -154,7 +82,7 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
 
 asmlinkage long handle_sys_exit(int error_code)
 {
-    if (processes[current->pid] != NULL && processes[current->pid]->mode == MODE_RECORD)
+    on_record
     {
         LOG("%d: sys_exit called", current->pid);
     }
@@ -163,13 +91,19 @@ asmlinkage long handle_sys_exit(int error_code)
 
 asmlinkage void handle_sys_exit_group(int error_code)
 {
-    if (processes[current->pid] != NULL && processes[current->pid]->mode == MODE_RECORD)
+    on_record
     {
         LOG("%d: sys_exit_group called", current->pid);
-        write_syscall_log_entry(__NR_exit_group, 0, NULL, 0);
+        write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
     }
-    return ((sys_exit_group_t) original_sys_call_table[__NR_exit_group])(error_code);
+
+    __asm__("pop %ebp");		/* Restore EBP */
+    __asm__("add $4, %esp");	/* Remove return address */
+
+	/* Jump to original syscall */
+    __asm__("jmp *%0" : : "r"(original_sys_call_table[__NR_exit_group]));
 }
+
 /*
  * Module function prototypes
  */
@@ -290,8 +224,8 @@ static void __exit kmod_exit(void)
                 }
                 kfree(processes[i]->monitor);
             }
-            kfree(processes[i]);
             DLOG("Freeing process state for PID %d", i);
+            kfree(processes[i]);
         }
     }
 
@@ -326,6 +260,43 @@ static int cdev_open(struct inode *inode, struct file *filp)
 {
     DLOG("Device open");
     return 0;
+}
+
+static int cdev_release(struct inode *inode, struct file *filp)
+{	
+	process_t *process = processes[current->pid];
+	monitor_t *monitor;
+
+	DLOG("Device close");
+
+	if (process != NULL && process->mode == MODE_MONITOR)
+	{
+		monitor = process->monitor;
+		if (monitor->app_pid != 0 && processes[monitor->app_pid] != NULL)
+		{
+			DLOG("Freeing process state for application PID %d", monitor->app_pid);
+			kfree(processes[monitor->app_pid]);
+			processes[monitor->app_pid] = NULL;
+		}
+
+		DLOG("Freeing system call buffer data for monitor PID %d", current->pid);
+		vfree(monitor->syscall_data);
+		monitor->syscall_data = NULL;
+		
+    	DLOG("Freeing monitor state for PID %d", current->pid);
+		kfree(monitor);
+		process->monitor = NULL;
+		
+		DLOG("Freeing process state for monitor PID %d", current->pid);
+		kfree(process);
+		processes[current->pid] = NULL;
+		
+		return 0;
+	}
+	else
+	{
+	    return -EFAULT;
+	}
 }
 
 static ssize_t cdev_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset)
@@ -371,12 +342,32 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d assigned as a monitor. Waiting for application.", current->pid);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+			if (! process)
+			{
+				result = -ENOMEM;
+				goto allocproc_fail; /* break; */
+			}
+			
             monitor = (monitor_t*) kmalloc(sizeof(monitor_t), GFP_KERNEL);
+			if (! monitor)
+			{
+				result = -ENOMEM;
+				goto allocmon_fail;
+			}
+
             process->mode = MODE_MONITOR;
             process->pid  = current->pid;
             process->monitor = monitor;
+
             monitor->syscall_data = (char*) vmalloc(SYSCALL_BUFFER_SIZE);
+			if (! (monitor->syscall_data))
+			{
+				result = -ENOMEM;
+				goto allocsyscallbuf_fail;
+			}
+
             monitor->syscall_offset = 0;
+			monitor->app_pid = 0;
 
             sema_init(&(monitor->syscall_sem), 1);
 
@@ -387,9 +378,16 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d being recorded by monitor process %d", current->pid, (pid_t) arg);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+			if (! process)
+			{
+				result = -ENOMEM;
+				goto allocproc_fail; /* break; */
+			}
+			
             process->mode = MODE_RECORD;
             process->pid = current->pid;
             process->monitor = processes[(pid_t) arg]->monitor;
+			process->monitor->app_pid = current->pid;
             processes[current->pid] = process;
             break;
 
@@ -397,6 +395,12 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d being replayed by monitor %d", current->pid, (pid_t) arg);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+			if (! process)
+			{
+				result = -ENOMEM;
+				goto allocproc_fail; /* break; */
+			}
+
             process->mode = MODE_REPLAY;
             process->pid = current->pid;
             process->monitor = processes[(pid_t) arg]->monitor;
@@ -406,7 +410,15 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Monitor %d registered callbacks", current->pid);
             break;
     }
+
+	allocproc_fail:
     return result;
+
+	allocsyscallbuf_fail:
+		kfree(monitor);
+	allocmon_fail:
+		kfree(process);
+	return result;	
 }
 
 /*
@@ -424,15 +436,36 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
 /*
  * Helper functions
  */
-void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
+void *sclmalloc(unsigned int size)
 {
     monitor_t *proc_mon = processes[current->pid]->monitor;
+    void* alloced_mem = (void*) (proc_mon->syscall_data + proc_mon->syscall_offset);
+
+    if (size > (SYSCALL_BUFFER_SIZE - proc_mon->syscall_offset))
+    {
+        DLOG("Log memory request: %d. Free: %d of %d bytes.", size, 
+            (SYSCALL_BUFFER_SIZE - proc_mon->syscall_offset),
+            SYSCALL_BUFFER_SIZE);
+        LOG("Out of log memory!");
+        return NULL;
+    }
+    
+    /* Allocate */
+    proc_mon->syscall_offset += size;
+    return alloced_mem;
+}
+
+void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
+{
+    struct semaphore *buffer_sem = &(processes[current->pid]->monitor->syscall_sem);
     syscall_log_entry_t* current_data;
 
-    down(&(proc_mon->syscall_sem));
-
-    current_data = (syscall_log_entry_t*)(proc_mon->syscall_data + proc_mon->syscall_offset);
-    proc_mon->syscall_offset += sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len;
+    /* Lock the buffer semaphore */
+    down(buffer_sem);
+    
+    DLOG("Allocating %d bytes in System call buffer",
+		(unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
+    current_data = (syscall_log_entry_t*) sclmalloc(sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len);
 
     current_data->call_no = call_no;
     current_data->return_value = ret_val;
@@ -444,6 +477,6 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
 
     DLOG("Wrote record - call_no: %d, return_value: %d", current_data->call_no, current_data->return_value);
 
-    up(&(proc_mon->syscall_sem));
+    /* Unlock the buffer semaphore */
+    up(buffer_sem);
 }
-

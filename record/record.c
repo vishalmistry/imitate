@@ -10,8 +10,6 @@
 #define FILE_SEPARATOR '/'
 #define PROG_ARGS 2
 
-extern char** environ;
-
 char* log_file_path(char* dir, char* fname)
 {
     int dir_len = strlen(dir), max_len;
@@ -31,18 +29,14 @@ char* log_file_path(char* dir, char* fname)
     return path;
 }
 
-int main(int argc, char* argv[])
+int main(int argc, char* argv[], char* envp[])
 {
     char* fpath;
     int i, j, k, dev;
     pid_t app_pid;
     FILE* arguments_file, syscall_file, sched_file;
     char* syscall_log;
-    struct
-    {
-        unsigned short call_no;
-        int ret_val;
-    } *log_entry;
+    syscall_log_entry_t *log_entry;
 
     /* Verify arguments */
     if (argc < 1)
@@ -76,14 +70,14 @@ int main(int argc, char* argv[])
 
     /* Store enviroment variables */
     i = 0;
-    while (environ[i]) { i++; }
+    while (envp[i]) { i++; }
     fwrite(&i, sizeof(i), 1, arguments_file);
 
     for (j = 0; j < i; j++)
     {
-        k = strlen(environ[j]);
+        k = strlen(envp[j]);
         fwrite(&k, sizeof(k), 1, arguments_file);
-        fwrite(environ[j], k, 1, arguments_file);
+        fwrite(envp[j], k, 1, arguments_file);
     }
 
     fclose(arguments_file);
@@ -101,11 +95,12 @@ int main(int argc, char* argv[])
         goto error_after_dev;
     }
 
-    if ((syscall_log = (char*) mmap(NULL, 4096, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
+    if ((syscall_log = (char*) mmap(NULL, SYSCALL_BUFFER_SIZE, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
     {
         perror("Memory mapping system call log");
+        goto error_after_dev;
     }
-    
+   
     app_pid = fork();
 
     if (app_pid > 0) /* Parent */
@@ -120,7 +115,7 @@ int main(int argc, char* argv[])
             goto error_after_dev;
         }
 
-        execve(argv[2], argv[3], environ);
+        execve(argv[2], argv+2, envp);
     }
     else /* Error */
     {
@@ -129,10 +124,9 @@ int main(int argc, char* argv[])
     }
 
     waitpid(app_pid, &i, NULL);
-    
-    log_entry = syscall_log;
 
-    printf("%d %d", log_entry->call_no, log_entry->ret_val);
+    log_entry = (syscall_log_entry_t*) syscall_log;
+    printf("%d %d", log_entry->call_no, log_entry->return_value);
 
     close(dev);
 

@@ -1,5 +1,5 @@
 CC = gcc
-INCLUDES = -I../module
+INCLUDES = -I../module/include
 
 all: record
 

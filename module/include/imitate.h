@@ -28,10 +28,26 @@
    from mmap'ed buffer */
 #define IMITATE_MONITOR_CB _IOR(IMITATE_IOC_MAGIC, 4, callback_t)
 
+/*
+ * Buffer size of syscall storage (10 MB)
+ */
+#define SYSCALL_BUFFER_SIZE 10485760
+
 typedef struct
 {
     int type;
     int data;
 } callback_t;
+
+/*
+ * System call log entry
+ */
+typedef struct
+{
+    unsigned short call_no;
+    int return_value;
+    unsigned long out_param_len;
+    char out_param;
+} syscall_log_entry_t;
 
 #endif
