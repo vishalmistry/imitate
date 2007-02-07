@@ -24,44 +24,29 @@ char* log_file_path(char* dir, char* fname)
     
     /* Build path */
     path = (char*) malloc(dir_len + strlen(fname) + 2);
+    if (! path)
+    {
+        perror("Allocating file path string");
+    }
     sprintf(path, "%s%c%s", dir, FILE_SEPARATOR, fname);
     
     return path;
 }
 
-int main(int argc, char* argv[], char* envp[])
+void store_arguments(char* log_dir, int argc, char* argv[], char* envp[])
 {
-    char* fpath;
-    int i, j, k, dev;
-    pid_t app_pid;
-    FILE* arguments_file, syscall_file, sched_file;
-    char* syscall_log;
-    syscall_log_entry_t *log_entry;
-
-    /* Verify arguments */
-    if (argc < 1)
-    {
-        printf("Imitate Recorder\n");
-        printf("Usage: %s <log_path> <executable_path> <args>\n",argv[0]);
-        return 0;
-    }
-
-    /* Create trace directory */
-    if (mkdir(argv[1], 0700) < 0)
-    {
-        perror("Creating log directory");
-        return -1;
-    }
+    char *fpath;
+    FILE *arguments_file;
+    int i, j, k;
 
     /* Create arguments file */
-    fpath = log_file_path(argv[1], "args");
+    fpath = log_file_path(log_dir, "args");
     arguments_file = fopen(fpath, "wb");
     free(fpath);
     
     /* Store executable + arguments */
-    i = argc - PROG_ARGS;
-    fwrite(&i, sizeof(i), 1, arguments_file);
-    for(i = PROG_ARGS; i < argc; i++)
+    fwrite(&argc, sizeof(argc), 1, arguments_file);
+    for(i = 0; i < argc; i++)
     {
         j = strlen(argv[i]);
         fwrite(&j, sizeof(j), 1, arguments_file);
@@ -81,6 +66,37 @@ int main(int argc, char* argv[], char* envp[])
     }
 
     fclose(arguments_file);
+}
+
+int main(int argc, char* argv[], char* envp[])
+{
+    int i, dev;
+    pid_t app_pid;
+    char *syscall_log, *fpath;
+    syscall_log_entry_t *log_entry;
+    FILE* syscall_log_file, sched_log_file;
+    callback_t cbdata =
+    {
+        .type = NO_DATA,
+        .size = 0
+    };
+
+    /* Verify arguments */
+    if (argc < 3)
+    {
+        printf("Imitate Recorder\n");
+        printf("Usage: %s <log_path> <executable_path> <args>\n",argv[0]);
+        return 0;
+    }
+
+    /* Create trace directory */
+    if (mkdir(argv[1], 0700) < 0)
+    {
+        perror("Creating log directory");
+        return -1;
+    }
+
+    store_arguments(argv[1], argc - PROG_ARGS, argv+PROG_ARGS, envp);
 
     dev = open("/dev/imitate0", O_RDWR);
     if (dev < 0)
@@ -105,7 +121,25 @@ int main(int argc, char* argv[], char* envp[])
 
     if (app_pid > 0) /* Parent */
     {
+        fpath = log_file_path(argv[1], "syscall");
+        syscall_log_file = fopen(fpath, "wb");
+        free(fpath);
 
+        while (cbdata.type != APP_EXIT)
+        {
+            if (ioctl(dev, IMITATE_MONITOR_CB, &cbdata) < 0)
+            {
+                perror("Requesting log data");
+                goto error_after_dev;
+            }
+
+            switch(cbdata.type)
+            {
+                case SYSCALL_DATA:
+                    fwrite(syscall_log, cbdata.size, 1, syscall_log_file);
+                    break;
+            }
+        }
     }
     else if (app_pid == 0) /* Child */
     {
@@ -115,7 +149,11 @@ int main(int argc, char* argv[], char* envp[])
             goto error_after_dev;
         }
 
-        execve(argv[2], argv+2, envp);
+        if (execve(argv[2], argv+2, envp) < 0)
+        {
+            perror("Application execve()");
+            return -2;
+        };
     }
     else /* Error */
     {
@@ -123,10 +161,9 @@ int main(int argc, char* argv[], char* envp[])
         goto error_after_dev;
     }
 
-    waitpid(app_pid, &i, NULL);
+    fclose(syscall_log_file);
 
-    log_entry = (syscall_log_entry_t*) syscall_log;
-    printf("%d %d", log_entry->call_no, log_entry->return_value);
+    waitpid(app_pid, &i, NULL);
 
     close(dev);
 

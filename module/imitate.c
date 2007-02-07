@@ -14,7 +14,6 @@
 #include <linux/mm.h>
 #include <asm/uaccess.h>
 #include "syscall_types.h"
-#include "include/imitate.h"
 #include "imitate_private.h"
 
 /*
@@ -89,12 +88,32 @@ asmlinkage long handle_sys_exit(int error_code)
     return ((sys_exit_t) original_sys_call_table[__NR_exit])(error_code);
 }
 
+noinline void do_final_write(void)
+{
+    monitor_t *monitor = processes[current->pid]->monitor;
+
+    /* Force monitor to write system call data */
+    down(&(monitor->data_write_complete_sem));
+    monitor->ready_data.type = SYSCALL_DATA;
+    monitor->ready_data.size = monitor->syscall_offset;
+    up(&(monitor->data_available_sem));
+        
+    /* Tell monitor that proc has exited */
+    down(&(monitor->data_write_complete_sem));
+    monitor->ready_data.type = APP_EXIT;
+    up(&(monitor->data_available_sem));
+}
+
 asmlinkage void handle_sys_exit_group(int error_code)
 {
     on_record
     {
         LOG("%d: sys_exit_group called", current->pid);
         write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
+
+        /* Avoid adding local variables on stack by jumping into a
+         * different function (thus a new stack frame) */
+        do_final_write();
     }
 
     __asm__("pop %ebp");		/* Restore EBP */
@@ -102,6 +121,21 @@ asmlinkage void handle_sys_exit_group(int error_code)
 
 	/* Jump to original syscall */
     __asm__("jmp *%0" : : "r"(original_sys_call_table[__NR_exit_group]));
+}
+
+asmlinkage long handle_sys_clock_gettime(clockid_t clk_id, struct timespec *tp)
+{
+    long ret;
+
+    ret = ((sys_clock_gettime_t) original_sys_call_table[__NR_clock_gettime])(clk_id, tp);
+    
+    on_record
+    {
+        LOG("%d: sys_clock_gettime called", current->pid);
+        write_syscall_log_entry(__NR_clock_gettime, ret, (char*) tp, sizeof(struct timespec));
+    }
+
+    return ret;
 }
 
 /*
@@ -155,6 +189,7 @@ static int __init kmod_init(void)
     DLOG("Attaching system call intercepts");
     sys_call_table[__NR_exit] = handle_sys_exit;
     sys_call_table[__NR_exit_group] = handle_sys_exit_group;
+    sys_call_table[__NR_clock_gettime] = handle_sys_clock_gettime;
 
     /* Set up the character device */
     DLOG("Registering character device");
@@ -368,8 +403,11 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 
             monitor->syscall_offset = 0;
 			monitor->app_pid = 0;
+            monitor->ready_data.type = NO_DATA;
 
             sema_init(&(monitor->syscall_sem), 1);
+            sema_init(&(monitor->data_available_sem), 0);
+            sema_init(&(monitor->data_write_complete_sem), 0);
 
             processes[current->pid] = process;
             break;
@@ -407,7 +445,39 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             break;
 
         case IMITATE_MONITOR_CB:
-            DLOG("Monitor %d registered callbacks", current->pid);
+            process = processes[current->pid];
+            if (process->mode != MODE_MONITOR)
+            {
+                return -EFAULT;
+            }
+            
+            /*
+             * Buffer was written, free and proceed with more logging
+             */
+            switch(process->monitor->ready_data.type == SYSCALL_DATA)
+            {
+                case SYSCALL_DATA:
+                    DLOG("Resetting system call buffer offset for monitor %d", current->pid);
+                    process->monitor->syscall_offset = 0;
+                    break;
+                case SCHED_DATA:
+                    DLOG("Resetting scheduler buffer offset for monitor %d", current->pid);
+                    process->monitor->sched_offset = 0;
+                    break;
+            }
+            DLOG("Releasing data write complete lock for monitor %d", current->pid);
+            up(&(process->monitor->data_write_complete_sem));
+
+            /*
+             * Block if there is not enough data.
+             * The semaphore will be incremented by write_syscall_log_entry()
+             * and write_thread_sched_log_entry() when enough data becomes
+             * available
+             */
+            DLOG("Waiting for data to become available for monitor %d", current->pid);
+            down(&(process->monitor->data_available_sem));
+
+            copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data));
             break;
     }
 
@@ -457,7 +527,8 @@ void *sclmalloc(unsigned int size)
 
 void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
 {
-    struct semaphore *buffer_sem = &(processes[current->pid]->monitor->syscall_sem);
+    monitor_t *monitor = processes[current->pid]->monitor;
+    struct semaphore *buffer_sem = &(monitor->syscall_sem);
     syscall_log_entry_t* current_data;
 
     /* Lock the buffer semaphore */
@@ -465,7 +536,28 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
     
     DLOG("Allocating %d bytes in System call buffer",
 		(unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
-    current_data = (syscall_log_entry_t*) sclmalloc(sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len);
+
+    while (! (current_data = (syscall_log_entry_t*) sclmalloc(sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len)))
+    {
+        /* If the offset was 0, then the buffer is too small */
+        if (monitor->syscall_offset == 0)
+        {
+            ERROR("System call %d from PID %d generated more data than the size of the record buffer!", call_no, current->pid);
+            ERROR("System call was _NOT_ recorded");
+            goto no_mem_fail;
+        }
+
+        DLOG("Waiting for monitor of PID %d to complete writing to disk", current->pid);
+        /* Data is not written */
+        down(&(monitor->data_write_complete_sem));
+        
+        monitor->ready_data.type = SYSCALL_DATA;
+        monitor->ready_data.size = monitor->syscall_offset;
+
+        /* Data is available */
+        DLOG("Sending system call data available message to monitor of PID %d", current->pid);
+        up(&(monitor->data_available_sem));
+    }
 
     current_data->call_no = call_no;
     current_data->return_value = ret_val;
@@ -476,7 +568,8 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
     }
 
     DLOG("Wrote record - call_no: %d, return_value: %d", current_data->call_no, current_data->return_value);
-
+    
+    no_mem_fail:
     /* Unlock the buffer semaphore */
     up(buffer_sem);
 }

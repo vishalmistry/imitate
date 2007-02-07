@@ -1,6 +1,8 @@
 #ifndef _IMITATE_PRIVATE_H
 #define _IMITATE_PRIVATE_H
 
+#include "include/imitate.h"
+
 /*
  * Module name for logging
  */
@@ -51,11 +53,15 @@ typedef void *syscall_t;
 typedef struct
 {
     struct semaphore syscall_sem;
+    struct semaphore data_available_sem;
+    struct semaphore data_write_complete_sem;
 	pid_t app_pid;
+    callback_t ready_data;
     unsigned int syscall_offset;
     unsigned int sched_offset;
     char *syscall_data;
     char *sched_data;
+    
 } monitor_t;
 
 /*
