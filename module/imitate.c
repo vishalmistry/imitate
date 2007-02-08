@@ -557,6 +557,10 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
         /* Data is available */
         DLOG("Sending system call data available message to monitor of PID %d", current->pid);
         up(&(monitor->data_available_sem));
+
+        /* Wait for write to complete before trying again */
+        down(&(monitor->data_write_complete_sem));
+        up(&(monitor->data_write_complete_sem));
     }
 
     current_data->call_no = call_no;
