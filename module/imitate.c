@@ -116,6 +116,11 @@ asmlinkage void handle_sys_exit_group(int error_code)
         do_final_write();
     }
 
+    /*
+     * Clear the stack so that this intercept appears as though
+     * it never existed. Since exit_group does not return, we must
+     * restore state prior to interception
+     */
     __asm__("pop %ebp");		/* Restore EBP */
     __asm__("add $4, %esp");	/* Remove return address */
 
@@ -123,10 +128,10 @@ asmlinkage void handle_sys_exit_group(int error_code)
     __asm__("jmp *%0" : : "r"(original_sys_call_table[__NR_exit_group]));
 }
 
-asmlinkage long handle_sys_clock_gettime(clockid_t clk_id, struct timespec *tp)
+asmlinkage long handle_sys_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
 {
     long ret;
-
+    
     ret = ((sys_clock_gettime_t) original_sys_call_table[__NR_clock_gettime])(clk_id, tp);
     
     on_record
@@ -560,7 +565,8 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
 
         /* Wait for write to complete before trying again */
         down(&(monitor->data_write_complete_sem));
-        up(&(monitor->data_write_complete_sem));
+        monitor->ready_data.type = NO_DATA;
+        up(&(monitor->data_available_sem));
     }
 
     current_data->call_no = call_no;
