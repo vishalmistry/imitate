@@ -1,28 +1,7 @@
 /* System call intercept function
  */
 
-/*
-if (replaying)
-{
-    // do copying..
-    return { 1, returnval }
-}
-else
-{
-    return { 0, 0 }
-}
-
-if (return[1] == 1)
-    movl return[1], %eax
-    jmp ret_from_syscall
-
-original_system_call
-
-if (recording)
-{
-    // record values
-}
-*/
+.global syscall_intercept
 
 syscall_intercept:
     pushl   %eax                    /* Save system call no */
@@ -34,13 +13,17 @@ syscall_intercept:
      *     - Parameters to system call
      */
     call    pre_syscall_callback    /* Pre-call */
+    cmpl    $0, %eax                /* Did we get a NULL? (process not monitored) */
+    je      original_call           /* Just call original handler */
     cmpb    $1, (%eax)              /* Have we replayed? */
     je      replay_return           /* Yes... */
+original_call:
     popl    %eax                    /* No - restore syscall number */
 
-    add     $4, %esp                    /* Remove return address */
-    call    *sys_call_table(,%eax,4)    /* Call original handler */
-    
+    add     $4, %esp                            /* Remove return address */
+    call    *original_sys_call_table(,%eax,4)   /* Call original handler */
+
+original_call_return:
     pushl   $0                      /* We will restore original syscall return address here */
     pushl   %eax                    /* Save system call return value */
 
@@ -51,6 +34,7 @@ syscall_intercept:
      *     - Parameters to system call
      */
     call    post_syscall_callback   /* Post-call */
+    movl    %eax, 4(%esp)           /* Restore return address */
     popl    %eax                    /* Restore system call return value */
 
 intercept_return:

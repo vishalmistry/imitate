@@ -24,15 +24,23 @@ MODULE_DESCRIPTION("Kernel portion of the Imitate record/replay framework");
 MODULE_LICENSE("GPLv2");
 
 /*
+ * System call intercept from architecture dependent function
+ */
+extern void syscall_intercept(void);
+
+/*
  * System call table and the backup
  */
+syscall_t original_sys_call_table[NR_syscalls];
 static syscall_t *sys_call_table = (syscall_t*) SYS_CALL_TABLE_ADDR;
-static syscall_t original_sys_call_table[NR_syscalls];
+void* pre_syscall_callbacks[NR_syscalls];
+void* post_syscall_callbacks[NR_syscalls];
 
 /*
  * Process list
  */
 static process_t *processes[PID_MAX_LIMIT];
+static unsigned long syscall_ret[PID_MAX_LIMIT];
 
 /*
  * Character device
@@ -76,6 +84,8 @@ MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " charact
 /*
  * General Prototypes
  */
+asmlinkage pre_syscall_ret_t *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args);
+asmlinkage unsigned long post_syscall_callback(int ret_value, unsigned long ret_addr, syscall_args_t args);
 void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len);
 
 
@@ -143,6 +153,10 @@ asmlinkage long handle_sys_clock_gettime(clockid_t clk_id, struct timespec __use
     return ret;
 }
 
+asmlinkage void empty_callback(void)
+{
+}
+
 /*
  * Module function prototypes
  */
@@ -188,13 +202,15 @@ static int __init kmod_init(void)
     for (i = 0; i < NR_syscalls; i++)
     {
         original_sys_call_table[i] = sys_call_table[i];
+        pre_syscall_callbacks[i] = empty_callback;
+        post_syscall_callbacks[i] = empty_callback;
     }
 
     /* Hook the system call intercepts */
     DLOG("Attaching system call intercepts");
-    sys_call_table[__NR_exit] = handle_sys_exit;
-    sys_call_table[__NR_exit_group] = handle_sys_exit_group;
-    sys_call_table[__NR_clock_gettime] = handle_sys_clock_gettime;
+    sys_call_table[__NR_exit] = syscall_intercept;
+    sys_call_table[__NR_exit_group] = syscall_intercept;
+    sys_call_table[__NR_clock_gettime] = syscall_intercept;
 
     /* Set up the character device */
     DLOG("Registering character device");
@@ -506,6 +522,31 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
     struct page *page = vmalloc_to_page(&(syscall_data[(address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT)]));
     get_page(page);
     return page;
+}
+
+/*
+ * System call pre-/post- callback handlers
+ */
+asmlinkage pre_syscall_ret_t *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args)
+{
+    process_t *process = processes[current->pid];
+    syscall_ret[current->pid] = ret_addr;
+
+    if (process != NULL)
+    {
+        process->pre_syscall_ret.replay = 0;
+        process->pre_syscall_ret.return_value = 0;
+    
+        return &(process->pre_syscall_ret);
+    }
+
+    return NULL;
+}
+
+asmlinkage unsigned long post_syscall_callback(int ret_value, unsigned long ret_addr, syscall_args_t args)
+{
+//    process_t *process = processes[current->pid];
+    return syscall_ret[current->pid];
 }
 
 /*
