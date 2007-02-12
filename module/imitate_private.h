@@ -48,15 +48,6 @@
 typedef void *syscall_t;
 
 /*
- * pre-syscall callback return struct
- */
-typedef struct
-{
-    char replay;
-    long return_value;
-} pre_syscall_ret_t;
-
-/*
  * Monitor process struct
  */
 typedef struct
@@ -81,7 +72,7 @@ typedef struct
     pid_t pid;
     char mode;
     monitor_t *monitor;
-    pre_syscall_ret_t pre_syscall_ret;
+    long pre_syscall_ret;
     unsigned long syscall_ret_addr;
 } process_t;
 

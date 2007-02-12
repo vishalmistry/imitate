@@ -33,8 +33,8 @@ extern void syscall_intercept(void);
  */
 syscall_t original_sys_call_table[NR_syscalls];
 static syscall_t *sys_call_table = (syscall_t*) SYS_CALL_TABLE_ADDR;
-void* pre_syscall_callbacks[NR_syscalls];
-void* post_syscall_callbacks[NR_syscalls];
+void* replay_callbacks[NR_syscalls];
+void* record_callbacks[NR_syscalls];
 
 /*
  * Process list
@@ -84,7 +84,7 @@ MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " charact
 /*
  * General Prototypes
  */
-asmlinkage pre_syscall_ret_t *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args);
+asmlinkage long *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args);
 asmlinkage unsigned long post_syscall_callback(int ret_value, unsigned long ret_addr, syscall_args_t args);
 void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len);
 
@@ -202,8 +202,8 @@ static int __init kmod_init(void)
     for (i = 0; i < NR_syscalls; i++)
     {
         original_sys_call_table[i] = sys_call_table[i];
-        pre_syscall_callbacks[i] = empty_callback;
-        post_syscall_callbacks[i] = empty_callback;
+        record_callbacks[i] = empty_callback;
+        replay_callbacks[i] = empty_callback;
     }
 
     /* Hook the system call intercepts */
@@ -527,16 +527,16 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
 /*
  * System call pre-/post- callback handlers
  */
-asmlinkage pre_syscall_ret_t *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args)
+asmlinkage long *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args)
 {
     process_t *process = processes[current->pid];
+
+    /* Store return address to be restored after pre-syscall callback */
     syscall_ret[current->pid] = ret_addr;
 
     if (process != NULL)
     {
-        process->pre_syscall_ret.replay = 0;
-        process->pre_syscall_ret.return_value = 0;
-    
+        process->pre_syscall_ret = 0;
         return &(process->pre_syscall_ret);
     }
 

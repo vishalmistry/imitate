@@ -14,9 +14,8 @@ syscall_intercept:
      */
     call    pre_syscall_callback    /* Pre-call */
     cmpl    $0, %eax                /* Did we get a NULL? (process not monitored) */
-    je      original_call           /* Just call original handler */
-    cmpb    $1, (%eax)              /* Have we replayed? */
-    je      replay_return           /* Yes... */
+    jne     replay_return           /* No... Perfrom replay */
+
 original_call:
     popl    %eax                    /* No - restore syscall number */
 
@@ -42,5 +41,5 @@ intercept_return:
 
 replay_return:
     add     $4, %esp                /* Remove saved system call number from stack */
-    movl    1(%eax), %eax           /* Set replayed return value */
+    movl    (%eax), %eax            /* Set replayed return value */
     ret
