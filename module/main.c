@@ -21,7 +21,7 @@
  */
 MODULE_AUTHOR("Vishal Mistry <vishal@digitalsilver.org>");
 MODULE_DESCRIPTION("Kernel portion of the Imitate record/replay framework");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL");
 
 /*
  * System call intercept from architecture dependent function
@@ -33,14 +33,14 @@ extern void syscall_intercept(void);
  */
 syscall_t original_sys_call_table[NR_syscalls];
 static syscall_t *sys_call_table = (syscall_t*) SYS_CALL_TABLE_ADDR;
-void* replay_callbacks[NR_syscalls];
-void* record_callbacks[NR_syscalls];
+void* pre_syscall_callbacks[NR_syscalls];
+void* post_syscall_callbacks[NR_syscalls];
 
 /*
  * Process list
  */
 static process_t *processes[PID_MAX_LIMIT];
-static unsigned long syscall_ret[PID_MAX_LIMIT];
+static unsigned long syscall_return_addresses[PID_MAX_LIMIT];
 
 /*
  * Character device
@@ -84,23 +84,22 @@ MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " charact
 /*
  * General Prototypes
  */
-asmlinkage long *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args);
-asmlinkage unsigned long post_syscall_callback(int ret_value, unsigned long ret_addr, syscall_args_t args);
-void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len);
+asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_return_addr, syscall_args_t syscall_args);
+asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsigned long syscall_return_addr, syscall_args_t syscall_args);
+void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_param, unsigned long out_param_len);
 
-
-asmlinkage long handle_sys_exit(int error_code)
+void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
 {
-    on_record
-    {
-        LOG("%d: sys_exit called", current->pid);
-    }
-    return ((sys_exit_t) original_sys_call_table[__NR_exit])(error_code);
+        LOG("%d: sys_clock_gettime called", current->pid);
+        write_syscall_log_entry(__NR_clock_gettime, return_value, (char*) tp, sizeof(struct timespec));
 }
 
-noinline void do_final_write(void)
+void pre_exit_group(int error_code)
 {
     monitor_t *monitor = processes[current->pid]->monitor;
+
+    LOG("%d: sys_exit_group called", current->pid);
+    write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
 
     /* Force monitor to write system call data */
     down(&(monitor->data_write_complete_sem));
@@ -112,45 +111,6 @@ noinline void do_final_write(void)
     down(&(monitor->data_write_complete_sem));
     monitor->ready_data.type = APP_EXIT;
     up(&(monitor->data_available_sem));
-}
-
-asmlinkage void handle_sys_exit_group(int error_code)
-{
-    on_record
-    {
-        LOG("%d: sys_exit_group called", current->pid);
-        write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
-
-        /* Avoid adding local variables on stack by jumping into a
-         * different function (thus a new stack frame) */
-        do_final_write();
-    }
-
-    /*
-     * Clear the stack so that this intercept appears as though
-     * it never existed. Since exit_group does not return, we must
-     * restore state prior to interception
-     */
-    __asm__("pop %ebp");		/* Restore EBP */
-    __asm__("add $4, %esp");	/* Remove return address */
-
-	/* Jump to original syscall */
-    __asm__("jmp *%0" : : "r"(original_sys_call_table[__NR_exit_group]));
-}
-
-asmlinkage long handle_sys_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
-{
-    long ret;
-    
-    ret = ((sys_clock_gettime_t) original_sys_call_table[__NR_clock_gettime])(clk_id, tp);
-    
-    on_record
-    {
-        LOG("%d: sys_clock_gettime called", current->pid);
-        write_syscall_log_entry(__NR_clock_gettime, ret, (char*) tp, sizeof(struct timespec));
-    }
-
-    return ret;
 }
 
 asmlinkage void empty_callback(void)
@@ -202,8 +162,8 @@ static int __init kmod_init(void)
     for (i = 0; i < NR_syscalls; i++)
     {
         original_sys_call_table[i] = sys_call_table[i];
-        record_callbacks[i] = empty_callback;
-        replay_callbacks[i] = empty_callback;
+        pre_syscall_callbacks[i] = empty_callback;
+        post_syscall_callbacks[i] = empty_callback;
     }
 
     /* Hook the system call intercepts */
@@ -211,6 +171,11 @@ static int __init kmod_init(void)
     sys_call_table[__NR_exit] = syscall_intercept;
     sys_call_table[__NR_exit_group] = syscall_intercept;
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
+
+    pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
+    
+    post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
+
 
     /* Set up the character device */
     DLOG("Registering character device");
@@ -527,26 +492,65 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
 /*
  * System call pre-/post- callback handlers
  */
-asmlinkage long *pre_syscall_callback(int call_no, unsigned long ret_addr, syscall_args_t args)
+asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_return_addr, syscall_args_t syscall_args)
 {
     process_t *process = processes[current->pid];
 
-    /* Store return address to be restored after pre-syscall callback */
-    syscall_ret[current->pid] = ret_addr;
-
-    if (process != NULL)
+    /* Store return address to be restored after post-syscall callback */
+    syscall_return_addresses[current->pid] = syscall_return_addr;
+    
+    /* Process is not being monitored. */
+    if (process == NULL)
     {
-        process->pre_syscall_ret = 0;
-        return &(process->pre_syscall_ret);
+        return NULL;
+    }
+    
+    /* Process is being monitored */
+    if (process->mode >= MODE_RECORD)
+    {
+        ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
+            syscall_args.arg1,
+            syscall_args.arg2,
+            syscall_args.arg3,
+            syscall_args.arg4,
+            syscall_args.arg5,
+            syscall_args.arg6);
+    }
+
+    switch (process->mode)
+    {
+        /* Application being recorded */
+        case MODE_RECORD:
+            process->last_syscall_no = (unsigned short) syscall_no;
+            break;
+
+        /* Application being replayed */
+        case MODE_REPLAY:
+            process->syscall_replay_value = 0;
+            return &(process->syscall_replay_value);
+            break;
     }
 
     return NULL;
 }
 
-asmlinkage unsigned long post_syscall_callback(int ret_value, unsigned long ret_addr, syscall_args_t args)
+asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsigned long syscall_return_addr, syscall_args_t syscall_args)
 {
-//    process_t *process = processes[current->pid];
-    return syscall_ret[current->pid];
+    process_t *process = processes[current->pid];
+
+    if(process != NULL && process->mode == MODE_RECORD)
+    {
+        ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(
+            syscall_return_value,
+            syscall_args.arg1,
+            syscall_args.arg2,
+            syscall_args.arg3,
+            syscall_args.arg4,
+            syscall_args.arg5,
+            syscall_args.arg6);
+    }
+
+    return syscall_return_addresses[current->pid];
 }
 
 /*
@@ -571,7 +575,7 @@ void *sclmalloc(unsigned int size)
     return alloced_mem;
 }
 
-void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_param, unsigned long out_param_len)
+void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_param, unsigned long out_param_len)
 {
     monitor_t *monitor = processes[current->pid]->monitor;
     struct semaphore *buffer_sem = &(monitor->syscall_sem);
@@ -618,7 +622,7 @@ void write_syscall_log_entry(unsigned short call_no, int ret_val, char *out_para
         copy_from_user(&(current_data->out_param), out_param, out_param_len);
     }
 
-    DLOG("Wrote record - call_no: %d, return_value: %d", current_data->call_no, current_data->return_value);
+    DLOG("Wrote record - call_no: %d, return_value: %ld", current_data->call_no, current_data->return_value);
     
     no_mem_fail:
     /* Unlock the buffer semaphore */

@@ -19,15 +19,9 @@
  * Monitored process modes
  */
 #define MODE_NULL       0
-#define MODE_RECORD     1
-#define MODE_REPLAY     2
-#define MODE_MONITOR    3
-
-/*
- * record
- */
-#define on_record		if (processes[current->pid] != NULL && processes[current->pid]->mode == MODE_RECORD)
-#define on_replay		if (processes[current->pid] != NULL && processes[current->pid]->mode == MODE_REPLAY)
+#define MODE_MONITOR    1
+#define MODE_RECORD     2
+#define MODE_REPLAY     3
 
 /*
  * Debug message macros
@@ -46,6 +40,12 @@
  * Type definition of a system call
  */
 typedef void *syscall_t;
+
+/*
+ * Type definition of a post-syscall callback
+ */
+#define pre_syscall_callback_t void (*) (long, long, long, long, long, long)
+#define post_syscall_callback_t void (*) (long, long, long, long, long, long, long)
 
 /*
  * Monitor process struct
@@ -72,7 +72,8 @@ typedef struct
     pid_t pid;
     char mode;
     monitor_t *monitor;
-    long pre_syscall_ret;
+    unsigned short last_syscall_no;
+    long syscall_replay_value;
     unsigned long syscall_ret_addr;
 } process_t;
 
@@ -81,11 +82,12 @@ typedef struct
  */
 typedef struct
 {
-    int arg1;
-    int arg2;
-    int arg3;
-    int arg4;
-    int arg5;
+    long arg1;
+    long arg2;
+    long arg3;
+    long arg4;
+    long arg5;
+    long arg6;
 } syscall_args_t;
 
 #endif

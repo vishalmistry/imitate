@@ -7,6 +7,7 @@ class CalltypeBuilder
         @infile = File.new(infile_name, "r")
         @outfile = File.new(outfile_name, "w")
         @syscalls_processed = 0
+        @maxargs = 0
     end
 
     def build_file
@@ -51,6 +52,11 @@ class CalltypeBuilder
                                     end
                                     tokens.join(" ")
                                 end
+
+                                if (param.length > @maxargs)
+                                    @maxargs = param.length
+                                end
+
                                 param = param.join(",") 
 
                                 @outfile.print "#define #{syscall_type_name} #{return_type} (*) (#{param})\n"
@@ -75,7 +81,9 @@ class CalltypeBuilder
     end
 
     def finalize
-        print "#{@syscalls_processed} system calls processed.\nFinished.\n\n"
+        print "#{@syscalls_processed} system calls processed.\n"
+        print "Maximum number of arguments for calls: #{@maxargs}\n"
+        print "Finished.\n\n"
         @infile.close
         @outfile.close
     end

@@ -50,7 +50,7 @@ typedef struct
 typedef struct
 {
     unsigned short call_no;
-    int return_value;
+    long return_value;
     unsigned long out_param_len;
     char out_param;
 } syscall_log_entry_t;
