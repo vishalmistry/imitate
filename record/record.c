@@ -153,7 +153,7 @@ int main(int argc, char* argv[], char* envp[])
         {
             perror("Application execve()");
             return -2;
-        };
+        }
     }
     else /* Error */
     {

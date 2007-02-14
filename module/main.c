@@ -14,7 +14,7 @@
 #include <linux/mm.h>
 #include <asm/uaccess.h>
 #include "syscall_types.h"
-#include "imitate_private.h"
+#include "main.h"
 
 /*
  * Module information
