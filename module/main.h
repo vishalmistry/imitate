@@ -1,6 +1,7 @@
 #ifndef _IMITATE_PRIVATE_H
 #define _IMITATE_PRIVATE_H
 
+#include <linux/list.h>
 #include "include/imitate.h"
 
 /*
@@ -24,6 +25,13 @@
 #define MODE_REPLAY     3
 
 /*
+ * Replay result macros
+ */
+#define replay_void       seek_to_next_syscall_entry()
+#define replay_value(P,X) seek_to_next_syscall_entry(); \
+                          (P)->syscall_replay_value = (X)->return_value;
+
+/*
  * Debug message macros
  */
 #ifdef DEBUG
@@ -42,40 +50,59 @@
 typedef void *syscall_t;
 
 /*
- * Type definition of a post-syscall callback
+ * "Type definition" of a post-syscall callback
  */
 #define pre_syscall_callback_t void (*) (long, long, long, long, long, long)
 #define post_syscall_callback_t void (*) (long, long, long, long, long, long, long)
 
+typedef struct process process_t;
+typedef struct monitor monitor_t;
+
+/*
+ * Process list struct for use with <linux/list.h>
+ */
+struct process_list
+{
+    process_t *process;
+    struct list_head list;
+};
+
 /*
  * Monitor process struct
  */
-typedef struct
+struct monitor
 {
     struct semaphore syscall_sem;
     struct semaphore data_available_sem;
     struct semaphore data_write_complete_sem;
+    struct process_list syscall_queue;
 	pid_t app_pid;
+    unsigned int child_count;
     callback_t ready_data;
     unsigned int syscall_offset;
     unsigned int sched_offset;
     char *syscall_data;
     char *sched_data;
-    
-} monitor_t;
+};
 
 /*
  * Process struct
  */
-typedef struct
+struct process
 {
     pid_t pid;
     char mode;
     monitor_t *monitor;
+    unsigned int child_id;
+
+    /*
+     * Storage for data between pre-/post- system call
+     * handlers
+     */
     unsigned short last_syscall_no;
     long syscall_replay_value;
     unsigned long syscall_ret_addr;
-} process_t;
+};
 
 /*
  * System call arguments struct

@@ -49,10 +49,11 @@ typedef struct
  */
 typedef struct
 {
+    unsigned int child_id;
     unsigned short call_no;
     long return_value;
     unsigned long out_param_len;
     char out_param;
-} syscall_log_entry_t;
+} __attribute__((packed)) syscall_log_entry_t;
 
 #endif

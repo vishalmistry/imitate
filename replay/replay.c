@@ -24,6 +24,7 @@ char* log_file_path(char* dir, char* fname)
     if (! path)
     {
         perror("Allocating file path string");
+        return NULL;
     }
     sprintf(path, "%s%c%s", dir, FILE_SEPARATOR, fname);
     

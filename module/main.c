@@ -5,8 +5,10 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/init.h>
 #include <linux/syscalls.h>
+#include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/errno.h>
@@ -84,9 +86,31 @@ MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " charact
 /*
  * General Prototypes
  */
-asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_return_addr, syscall_args_t syscall_args);
-asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsigned long syscall_return_addr, syscall_args_t syscall_args);
-void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_param, unsigned long out_param_len);
+asmlinkage long *pre_syscall_callback(long syscall_no,
+                                      unsigned long syscall_return_addr,
+                                      syscall_args_t syscall_args);
+asmlinkage unsigned long post_syscall_callback(long syscall_return_value, 
+                                               unsigned long syscall_return_addr, 
+                                               syscall_args_t syscall_args);
+void write_syscall_log_entry(unsigned short call_no, 
+                             long ret_val, 
+                             char *out_param, 
+                             unsigned long out_param_len);
+syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no);
+void seek_to_next_syscall_entry(void);
+
+
+void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
+{
+    process_t *process = processes[current->pid];
+    syscall_log_entry_t *entry;
+
+    if (process->mode == MODE_REPLAY)
+    {
+        entry = get_next_syscall_log_entry(__NR_clock_gettime);
+        replay_value(process, entry);
+    }
+}
 
 void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
 {
@@ -96,21 +120,26 @@ void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __u
 
 void pre_exit_group(int error_code)
 {
-    monitor_t *monitor = processes[current->pid]->monitor;
+    process_t *process = processes[current->pid];
+    monitor_t *monitor = process->monitor;
 
     LOG("%d: sys_exit_group called", current->pid);
     write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
 
-    /* Force monitor to write system call data */
-    down(&(monitor->data_write_complete_sem));
-    monitor->ready_data.type = SYSCALL_DATA;
-    monitor->ready_data.size = monitor->syscall_offset;
-    up(&(monitor->data_available_sem));
+    /* Last process */
+    if (process->child_id == 1)
+    {
+        /* Force monitor to write system call data */
+        down(&(monitor->data_write_complete_sem));
+        monitor->ready_data.type = SYSCALL_DATA;
+        monitor->ready_data.size = monitor->syscall_offset;
+        up(&(monitor->data_available_sem));
         
-    /* Tell monitor that proc has exited */
-    down(&(monitor->data_write_complete_sem));
-    monitor->ready_data.type = APP_EXIT;
-    up(&(monitor->data_available_sem));
+        /* Tell monitor that proc has exited */
+        down(&(monitor->data_write_complete_sem));
+        monitor->ready_data.type = APP_EXIT;
+        up(&(monitor->data_available_sem));
+    }
 }
 
 asmlinkage void empty_callback(void)
@@ -173,6 +202,7 @@ static int __init kmod_init(void)
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
 
     pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
+    pre_syscall_callbacks[__NR_clock_gettime] = pre_clock_gettime;
     
     post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
 
@@ -387,9 +417,15 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 				goto allocsyscallbuf_fail;
 			}
 
-            monitor->syscall_offset = 0;
+            /* TODO: Allocate schedule data */
+
 			monitor->app_pid = 0;
+            monitor->child_count = 0;
+            monitor->syscall_offset = 0;
+            monitor->sched_offset = 0;
             monitor->ready_data.type = NO_DATA;
+
+            INIT_LIST_HEAD(&(monitor->syscall_queue.list));
 
             sema_init(&(monitor->syscall_sem), 1);
             sema_init(&(monitor->data_available_sem), 0);
@@ -408,10 +444,11 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 				goto allocproc_fail; /* break; */
 			}
 			
-            process->mode = MODE_RECORD;
             process->pid = current->pid;
+            process->mode = MODE_RECORD;
             process->monitor = processes[(pid_t) arg]->monitor;
-			process->monitor->app_pid = current->pid;
+            process->child_id = ++(process->monitor->child_count);
+            process->monitor->app_pid = current->pid;
             processes[current->pid] = process;
             break;
 
@@ -425,14 +462,17 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 				goto allocproc_fail; /* break; */
 			}
 
-            process->mode = MODE_REPLAY;
             process->pid = current->pid;
+            process->mode = MODE_REPLAY;
             process->monitor = processes[(pid_t) arg]->monitor;
+            process->child_id = ++(process->monitor->child_count);
+            process->monitor->app_pid = current->pid;
+            processes[current->pid] = process;
             break;
 
         case IMITATE_MONITOR_CB:
             process = processes[current->pid];
-            if (process->mode != MODE_MONITOR)
+            if (process == NULL || process->mode != MODE_MONITOR)
             {
                 return -EFAULT;
             }
@@ -440,14 +480,16 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             /*
              * Buffer was written, free and proceed with more logging
              */
-            switch(process->monitor->ready_data.type == SYSCALL_DATA)
+            switch(process->monitor->ready_data.type)
             {
                 case SYSCALL_DATA:
                     DLOG("Resetting system call buffer offset for monitor %d", current->pid);
+                    copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
                     process->monitor->syscall_offset = 0;
                     break;
                 case SCHED_DATA:
                     DLOG("Resetting scheduler buffer offset for monitor %d", current->pid);
+                    copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
                     process->monitor->sched_offset = 0;
                     break;
             }
@@ -508,6 +550,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
     {
+        /* syscall_replay_value is not used during record */
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
             syscall_args.arg1,
             syscall_args.arg2,
@@ -526,7 +569,6 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
 
         /* Application being replayed */
         case MODE_REPLAY:
-            process->syscall_replay_value = 0;
             return &(process->syscall_replay_value);
             break;
     }
@@ -577,7 +619,8 @@ void *sclmalloc(unsigned int size)
 
 void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_param, unsigned long out_param_len)
 {
-    monitor_t *monitor = processes[current->pid]->monitor;
+    process_t *process = processes[current->pid];
+    monitor_t *monitor = process->monitor;
     struct semaphore *buffer_sem = &(monitor->syscall_sem);
     syscall_log_entry_t* current_data;
 
@@ -614,6 +657,7 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
         up(&(monitor->data_available_sem));
     }
 
+    current_data->child_id = process->child_id;
     current_data->call_no = call_no;
     current_data->return_value = ret_val;
     current_data->out_param_len = out_param_len;
@@ -622,9 +666,122 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
         copy_from_user(&(current_data->out_param), out_param, out_param_len);
     }
 
-    DLOG("Wrote record - call_no: %d, return_value: %ld", current_data->call_no, current_data->return_value);
+    DLOG("Wrote record - child_id: %d, call_no: %d, return_value: %ld", current_data->child_id, current_data->call_no, current_data->return_value);
     
     no_mem_fail:
+    /* Unlock the buffer semaphore */
+    up(buffer_sem);
+}
+
+syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
+{
+    process_t *process = processes[current->pid];
+    monitor_t *monitor = process->monitor;
+    struct semaphore *buffer_sem = &(monitor->syscall_sem);
+    syscall_log_entry_t* log_entry = NULL;
+    struct process_list *queue_item;
+
+    /* Lock the buffer semaphore */
+    down(buffer_sem);
+
+    /* Current log entry */
+    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
+    
+    while (process->child_id != log_entry->child_id)
+    {
+        DLOG("System call log entry out of order. Current process: %d, expected: %d", process->child_id, log_entry->child_id);
+        DLOG("Queuing and blocking process %d (PID %d)", process->child_id, process->pid);
+
+        queue_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
+        list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
+
+        set_current_state(TASK_UNINTERRUPTIBLE);
+        up(buffer_sem);
+        schedule();
+        
+        DLOG("Blocked process %d (PID: %d) has been woken up.", process->child_id, process->pid);
+        down(buffer_sem);
+        log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
+    }
+
+    if (log_entry->call_no != call_no)
+    {
+        /* Kill process */
+    }
+
+    /* Unlock the buffer semaphore */
+    up(buffer_sem);
+
+    return log_entry;
+}
+
+void seek_to_next_syscall_entry(void)
+{
+    monitor_t *monitor = processes[current->pid]->monitor;
+    struct semaphore *buffer_sem = &(monitor->syscall_sem);
+    syscall_log_entry_t* log_entry = NULL;
+    struct list_head *pos, *tmp;
+    struct process_list *item;
+    unsigned long next_offset = 0;
+
+    down(buffer_sem);
+
+    /* Current log entry */
+    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
+    
+    /* Check limit */
+    next_offset = monitor->syscall_offset +
+                  sizeof(*log_entry) - 
+                  sizeof(log_entry->out_param) + 
+                  log_entry->out_param_len;
+    if (next_offset > monitor->ready_data.size)
+    {
+        /* Request more data */
+        DLOG("Waiting for monitor of PID %d to complete reading from disk", current->pid);
+
+        /* Data is not read */
+        down(&(monitor->data_write_complete_sem));
+        
+        monitor->ready_data.type = SYSCALL_DATA;
+        monitor->ready_data.size = 0;
+
+        /* Data is available */
+        DLOG("Sending system call data unavailable message to monitor of PID %d", current->pid);
+        up(&(monitor->data_available_sem));
+
+        /* Wait for read to complete before trying again */
+        down(&(monitor->data_write_complete_sem));
+        monitor->ready_data.type = NO_DATA;
+        up(&(monitor->data_available_sem));
+ 
+        if (monitor->ready_data.size == 0)
+        {
+            DLOG("System call log for PID %d is empty", current->pid);
+            monitor->syscall_offset = 0;
+            goto no_more_calls;
+        }
+        next_offset = 0;
+    }
+
+    /* Next log entry */
+    monitor->syscall_offset = next_offset;
+    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + next_offset);
+
+    /* Wake next process on queue if ID matches */
+    list_for_each_safe(pos, tmp, &(monitor->syscall_queue.list))
+    {
+        item = list_entry(pos, struct process_list, list);
+        if (item->process->child_id == log_entry->child_id)
+        {
+            DLOG("Waking up previously blocked process %d (PID: %d)", item->process->child_id, item->process->pid);
+            wake_up_process(find_task_by_pid(item->process->pid));
+            list_del(pos);
+            kfree(item);
+            break;
+        }
+    }
+
+    no_more_calls:
     /* Unlock the buffer semaphore */
     up(buffer_sem);
 }
