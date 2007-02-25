@@ -108,6 +108,7 @@ void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
     if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_clock_gettime);
+        copy_to_user(tp, (struct timespec __user*) &(entry->out_param), sizeof(struct timespec));
         replay_value(process, entry);
     }
 }
@@ -122,24 +123,33 @@ void pre_exit_group(int error_code)
 {
     process_t *process = processes[current->pid];
     monitor_t *monitor = process->monitor;
+    syscall_log_entry_t *entry;
 
     LOG("%d: sys_exit_group called", current->pid);
-    write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
-
-    /* Last process */
-    if (process->child_id == 1)
+    if (process->mode == MODE_RECORD)
     {
-        /* Force monitor to write system call data */
-        down(&(monitor->data_write_complete_sem));
-        monitor->ready_data.type = SYSCALL_DATA;
-        monitor->ready_data.size = monitor->syscall_offset;
-        up(&(monitor->data_available_sem));
-        
-        /* Tell monitor that proc has exited */
-        down(&(monitor->data_write_complete_sem));
-        monitor->ready_data.type = APP_EXIT;
-        up(&(monitor->data_available_sem));
+        write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
+
+        /* Last process */
+        if (process->child_id == 1)
+        {
+            /* Force monitor to write system call data */
+            down(&(monitor->data_write_complete_sem));
+            monitor->ready_data.type = SYSCALL_DATA;
+            monitor->ready_data.size = monitor->syscall_offset;
+            up(&(monitor->data_available_sem));
+        }
     }
+    else if (process->mode == MODE_REPLAY)
+    {
+        entry = get_next_syscall_log_entry(__NR_exit_group);
+        *(&error_code) = entry->return_value;
+    }
+
+    /* Tell monitor that proc has exited */
+    down(&(monitor->data_write_complete_sem));
+    monitor->ready_data.type = APP_EXIT;
+    up(&(monitor->data_available_sem));
 }
 
 asmlinkage void empty_callback(void)
@@ -377,6 +387,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
     int result = 0;
     process_t *process;
     monitor_t *monitor;
+    prep_replay_t prepdata;
     
     /* Verify cmd is valid */
     if (_IOC_TYPE(cmd) != IMITATE_IOC_MAGIC) return -ENOTTY;
@@ -421,6 +432,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 
 			monitor->app_pid = 0;
             monitor->child_count = 0;
+            monitor->syscall_size = 0;
+            monitor->sched_size = 0;
             monitor->syscall_offset = 0;
             monitor->sched_offset = 0;
             monitor->ready_data.type = NO_DATA;
@@ -478,18 +491,20 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             }
             
             /*
-             * Buffer was written, free and proceed with more logging
+             * Buffer was written/read, proceed with more logging/replaying
              */
             switch(process->monitor->ready_data.type)
             {
                 case SYSCALL_DATA:
                     DLOG("Resetting system call buffer offset for monitor %d", current->pid);
                     copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
+                    process->monitor->syscall_size = process->monitor->ready_data.size;
                     process->monitor->syscall_offset = 0;
                     break;
                 case SCHED_DATA:
                     DLOG("Resetting scheduler buffer offset for monitor %d", current->pid);
                     copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
+                    process->monitor->sched_size = process->monitor->ready_data.size;
                     process->monitor->sched_offset = 0;
                     break;
             }
@@ -506,6 +521,13 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             down(&(process->monitor->data_available_sem));
 
             copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data));
+            break;
+
+        case IMITATE_PREP_REPLAY:
+            process = processes[current->pid];
+            copy_from_user(&prepdata, (void __user*) arg, sizeof(prepdata));
+            process->monitor->syscall_size = prepdata.syscall_size;
+            process->monitor->sched_size = prepdata.sched_size;
             break;
     }
 
@@ -734,7 +756,7 @@ void seek_to_next_syscall_entry(void)
                   sizeof(*log_entry) - 
                   sizeof(log_entry->out_param) + 
                   log_entry->out_param_len;
-    if (next_offset > monitor->ready_data.size)
+    if (next_offset > monitor->syscall_size)
     {
         /* Request more data */
         DLOG("Waiting for monitor of PID %d to complete reading from disk", current->pid);
@@ -754,7 +776,7 @@ void seek_to_next_syscall_entry(void)
         monitor->ready_data.type = NO_DATA;
         up(&(monitor->data_available_sem));
  
-        if (monitor->ready_data.size == 0)
+        if (monitor->syscall_size == 0)
         {
             DLOG("System call log for PID %d is empty", current->pid);
             monitor->syscall_offset = 0;

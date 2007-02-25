@@ -79,6 +79,8 @@ struct monitor
 	pid_t app_pid;
     unsigned int child_count;
     callback_t ready_data;
+    unsigned int syscall_size;
+    unsigned int sched_size;
     unsigned int syscall_offset;
     unsigned int sched_offset;
     char *syscall_data;

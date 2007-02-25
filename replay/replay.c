@@ -63,6 +63,8 @@ int read_string_array_from_file(char*** arr, FILE* filp)
         }
         (*arr)[i][str_size] = '\0';
     }
+
+    return 0;
 }
 
 void read_arguments_log(char* log_dir, char*** argv, char*** environ)
@@ -82,10 +84,24 @@ void read_arguments_log(char* log_dir, char*** argv, char*** environ)
         exit(-1);
     }
 
-    read_string_array_from_file(argv, arguments_file);
-    read_string_array_from_file(environ, arguments_file);
+    if (read_string_array_from_file(argv, arguments_file) < 0)
+    {
+        perror("Reading arguments from arguments log");
+        goto read_fail;
+    }
 
+    if (read_string_array_from_file(environ, arguments_file) < 0)
+    {
+        perror("Reading environment from arguments log");
+        goto read_fail;
+    }
+    
     fclose(arguments_file);
+    return;
+
+    read_fail:
+    fclose(arguments_file);
+    exit(-1);
 }
 
 void free_arguments_log(char*** argv, char*** environ)
@@ -107,6 +123,87 @@ void free_arguments_log(char*** argv, char*** environ)
     free((*environ));
 }
 
+void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *cbdata)
+{
+    int record_size, read_count;
+    char syscall_full;
+    syscall_log_entry_t *syscall_log_entry;
+
+    cbdata->size = 0;
+    syscall_full = 0;
+
+    while (! syscall_full)
+    {
+        record_size = sizeof(*syscall_log_entry) - sizeof(syscall_log_entry->out_param);
+
+        syscall_log_entry = (syscall_log_entry_t*) (syscall_log + cbdata->size);
+
+        /* Does the buffer have enough room for a record? */
+        if (cbdata->size + record_size < SYSCALL_BUFFER_SIZE)
+        {
+            /* Read the record */
+            read_count = fread(syscall_log_entry, record_size, 1, syscall_log_file);
+
+            if (read_count < 1)  /* Read failed */ 
+            {
+                if (!feof(syscall_log_file))
+                {
+                    perror("Reading from system call log file");
+                }
+                break;
+            }
+            else        /* Read succeeded */
+            {
+                /* Read out_param if necessary */
+                if (syscall_log_entry->out_param_len > 0)
+                {
+                    record_size += syscall_log_entry->out_param_len;
+
+                    /* Does buffer have space for out_param? */
+                    if (cbdata->size + record_size < SYSCALL_BUFFER_SIZE)
+                    {
+                        read_count = fread(&(syscall_log_entry->out_param), 
+                                           syscall_log_entry->out_param_len,
+                                           1,
+                                           syscall_log_file);
+
+                        if (read_count < 1)  /* Read failed */
+                        {
+                            perror("Reading from system call log file");
+                            break;
+                        }
+                        else        /* Read succeeded */
+                        {
+                            cbdata->size += record_size;
+                        }
+                    }
+                    else
+                    {
+                        /* No space. Seek back to beginning of record */
+                        if (fseek(syscall_log_file, (long) -record_size, SEEK_CUR) < 0)
+                        {
+                            perror("Rewinding system call log file position");
+                            break;
+                        }
+                        syscall_full = 1;
+                    }
+                }
+                else
+                {
+                    /* No out_param. Just continue */
+                    cbdata->size += record_size;
+                }
+            }
+        }
+        else
+        {
+            /* No more space */
+            syscall_full = 1;
+        }
+    }
+
+}
+
 int main(int argc, char* argv[])
 {
     int dev, i;
@@ -114,10 +211,17 @@ int main(int argc, char* argv[])
     char **prog_args, **prog_env;
     char *syscall_log, *fpath;
     FILE* syscall_log_file, sched_log_file;
+
     callback_t cbdata =
     {
         .type = NO_DATA,
         .size = 0
+    };
+
+    prep_replay_t prepdata =
+    {
+        .syscall_size = 0,
+        .sched_size = 0
     };
 
     /* Verify arguments */
@@ -130,6 +234,17 @@ int main(int argc, char* argv[])
 
     /* Read arguments and environment */
     read_arguments_log(argv[1], &prog_args, &prog_env);
+
+    /* Open system call log file */
+    fpath = log_file_path(argv[1], "syscall");
+    syscall_log_file = fopen(fpath, "rb");
+    free(fpath);
+
+    if (! syscall_log_file)
+    {
+        perror("Opening system call log");
+        return -1;
+    }
 
     dev = open("/dev/imitate0", O_RDWR);
     if (dev < 0)
@@ -144,20 +259,25 @@ int main(int argc, char* argv[])
         goto error_after_dev;
     }
 
-    if ((syscall_log = (char*) mmap(NULL, SYSCALL_BUFFER_SIZE, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
+    if ((syscall_log = (char*) mmap(NULL, SYSCALL_BUFFER_SIZE, PROT_WRITE, MAP_SHARED, dev, 0)) == MAP_FAILED)
     {
         perror("Memory mapping system call log");
         goto error_after_dev;
     }
-   
+
+    fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
+    prepdata.syscall_size = cbdata.size;
+
+    if (ioctl(dev, IMITATE_PREP_REPLAY, &prepdata) < 0)
+    {
+        perror("Populating inital buffer sizes");
+        goto error_after_dev;
+    }
+
     app_pid = fork();
 
     if (app_pid > 0) /* Parent */
     {
-        fpath = log_file_path(argv[1], "syscall");
-        syscall_log_file = fopen(fpath, "rb");
-        free(fpath);
-
         while (cbdata.type != APP_EXIT)
         {
             if (ioctl(dev, IMITATE_MONITOR_CB, &cbdata) < 0)
@@ -169,7 +289,7 @@ int main(int argc, char* argv[])
             switch(cbdata.type)
             {
                 case SYSCALL_DATA:
-                    fread(syscall_log, cbdata.size, 1, syscall_log_file);
+                    fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
                     break;
             }
         }

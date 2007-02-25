@@ -7,7 +7,7 @@
 #define IMITATE_IOC_MAGIC 0xE0
 
 /* Maximum command number */
-#define IMITATE_IOC_MAXNR 4
+#define IMITATE_IOC_MAXNR 5
 
 /*
  * ioctl() commands
@@ -27,6 +27,8 @@
 /* Notify driver of callback on monitor to request/remove data
    from mmap'ed buffer */
 #define IMITATE_MONITOR_CB _IOR(IMITATE_IOC_MAGIC, 4, callback_t)
+/* Notify driver of initial buffer sizes during replay */
+#define IMITATE_PREP_REPLAY _IOR(IMITATE_IOC_MAGIC, 5, prep_replay_t)
 
 #define NO_DATA      0x0
 #define SYSCALL_DATA 0x1
@@ -43,6 +45,12 @@ typedef struct
     int type;
     int size;
 } callback_t;
+
+typedef struct
+{
+    int syscall_size;
+    int sched_size;
+} prep_replay_t;
 
 /*
  * System call log entry
