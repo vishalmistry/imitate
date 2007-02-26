@@ -115,8 +115,7 @@ void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
 
 void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
 {
-        LOG("%d: sys_clock_gettime called", current->pid);
-        write_syscall_log_entry(__NR_clock_gettime, return_value, (char*) tp, sizeof(struct timespec));
+    write_syscall_log_entry(__NR_clock_gettime, return_value, (char*) tp, sizeof(struct timespec));
 }
 
 void pre_exit_group(int error_code)
@@ -125,7 +124,6 @@ void pre_exit_group(int error_code)
     monitor_t *monitor = process->monitor;
     syscall_log_entry_t *entry;
 
-    LOG("%d: sys_exit_group called", current->pid);
     if (process->mode == MODE_RECORD)
     {
         write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
@@ -143,6 +141,7 @@ void pre_exit_group(int error_code)
     else if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_exit_group);
+        DLOG("Replaying exitgroup: %d, %d", entry->call_no, entry->return_value);
         *(&error_code) = entry->return_value;
     }
 
@@ -572,7 +571,6 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
     {
-        /* syscall_replay_value is not used during record */
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
             syscall_args.arg1,
             syscall_args.arg2,
@@ -756,7 +754,7 @@ void seek_to_next_syscall_entry(void)
                   sizeof(*log_entry) - 
                   sizeof(log_entry->out_param) + 
                   log_entry->out_param_len;
-    if (next_offset > monitor->syscall_size)
+    if (next_offset >= monitor->syscall_size)
     {
         /* Request more data */
         DLOG("Waiting for monitor of PID %d to complete reading from disk", current->pid);
