@@ -141,7 +141,6 @@ void pre_exit_group(int error_code)
     else if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_exit_group);
-        DLOG("Replaying exitgroup: %d, %d", entry->call_no, entry->return_value);
         *(&error_code) = entry->return_value;
     }
 
@@ -571,6 +570,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
     {
+        process->replay_syscall = 0;
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
             syscall_args.arg1,
             syscall_args.arg2,
@@ -589,7 +589,10 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
 
         /* Application being replayed */
         case MODE_REPLAY:
-            return &(process->syscall_replay_value);
+            if (process->replay_syscall)
+            {
+                return &(process->syscall_replay_value);
+            }
             break;
     }
 

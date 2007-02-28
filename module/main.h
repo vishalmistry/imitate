@@ -27,9 +27,11 @@
 /*
  * Replay result macros
  */
-#define replay_void       seek_to_next_syscall_entry()
+#define replay_void(P)    seek_to_next_syscall_entry(); \
+                          (P)->replay_syscall = 1
 #define replay_value(P,X) seek_to_next_syscall_entry(); \
-                          (P)->syscall_replay_value = (X)->return_value;
+                          (P)->replay_syscall = 1; \
+                          (P)->syscall_replay_value = (X)->return_value
 
 /*
  * Debug message macros
@@ -102,8 +104,8 @@ struct process
      * handlers
      */
     unsigned short last_syscall_no;
+    unsigned char replay_syscall;
     long syscall_replay_value;
-    unsigned long syscall_ret_addr;
 };
 
 /*
