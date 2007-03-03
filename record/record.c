@@ -116,7 +116,7 @@ int main(int argc, char* argv[], char* envp[])
         perror("Memory mapping system call log");
         goto error_after_dev;
     }
-   
+
     app_pid = fork();
 
     if (app_pid > 0) /* Parent */

@@ -39,6 +39,7 @@
  * Buffer size of syscall storage (10 MB)
  */
 #define SYSCALL_BUFFER_SIZE 10485760
+//#define SYSCALL_BUFFER_SIZE 16384
 
 typedef struct
 {

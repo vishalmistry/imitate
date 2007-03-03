@@ -128,6 +128,7 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
     int record_size, read_count;
     char syscall_full;
     syscall_log_entry_t *syscall_log_entry;
+    fpos_t fpos;
 
     cbdata->size = 0;
     syscall_full = 0;
@@ -148,7 +149,7 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
             {
                 if (!feof(syscall_log_file))
                 {
-                    perror("Reading from system call log file");
+                    perror("Reading from system call log file (syscall_log_entry)");
                 }
                 break;
             }
@@ -169,7 +170,7 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
 
                         if (read_count < 1)  /* Read failed */
                         {
-                            perror("Reading from system call log file");
+                            perror("Reading from system call log file (out_param)");
                             break;
                         }
                         else        /* Read succeeded */
@@ -180,7 +181,7 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
                     else
                     {
                         /* No space. Seek back to beginning of record */
-                        if (fseek(syscall_log_file, (long) -record_size, SEEK_CUR) < 0)
+                        if (fseek(syscall_log_file, (long) -(record_size - syscall_log_entry->out_param_len), SEEK_CUR) < 0)
                         {
                             perror("Rewinding system call log file position");
                             break;
@@ -303,7 +304,7 @@ int main(int argc, char* argv[])
             goto error_after_dev;
         }
 
-        if (execve(prog_args[0], prog_args+1, prog_env) < 0)
+        if (execve(prog_args[0], prog_args, prog_env) < 0)
         {
             perror("Application execve()");
             return -2;

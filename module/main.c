@@ -70,7 +70,7 @@ static struct file_operations fops =
 /*
  * Memory map operations
  */
-static struct page *vma_syscall_nopage(struct vm_area_struct *area, unsigned long address, int *type);
+static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long address, int *type);
 static struct vm_operations_struct vm_syscall_ops =
 {
     .nopage  = vma_syscall_nopage
@@ -116,6 +116,48 @@ void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
 void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
 {
     write_syscall_log_entry(__NR_clock_gettime, return_value, (char*) tp, sizeof(struct timespec));
+}
+
+void pre_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
+{
+    process_t *process = processes[current->pid];
+    syscall_log_entry_t *entry;
+
+    if (process->mode == MODE_REPLAY)
+    {
+        entry = get_next_syscall_log_entry(__NR_getdents64);
+        if (entry->return_value > 0)
+        {
+            copy_to_user(dirent, (struct linux_dirent64 __user*) &(entry->out_param), entry->return_value);
+        }
+        replay_value(process, entry);
+    }
+}
+
+void post_getdents64(long return_value, unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
+{
+    write_syscall_log_entry(__NR_getdents64, return_value, (char*) dirent, return_value > 0 ? return_value : 0);
+}
+
+void pre_fstat64(unsigned long fd, struct stat64 __user *statbuf)
+{
+    process_t *process = processes[current->pid];
+    syscall_log_entry_t *entry;
+
+    if (process->mode == MODE_REPLAY)
+    {
+        entry = get_next_syscall_log_entry(__NR_fstat64);
+        if (entry->return_value == 0)
+        {
+            copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64));
+        }
+        replay_value(process, entry);
+    }
+}
+
+void post_fstat64(long return_value, unsigned long fd, struct stat64 __user *statbuf)
+{
+    write_syscall_log_entry(__NR_fstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
 }
 
 void pre_exit_group(int error_code)
@@ -208,11 +250,17 @@ static int __init kmod_init(void)
     sys_call_table[__NR_exit] = syscall_intercept;
     sys_call_table[__NR_exit_group] = syscall_intercept;
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
+    sys_call_table[__NR_getdents64] = syscall_intercept;
+    sys_call_table[__NR_fstat64] = syscall_intercept;
 
     pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
     pre_syscall_callbacks[__NR_clock_gettime] = pre_clock_gettime;
+    pre_syscall_callbacks[__NR_getdents64] = pre_getdents64;
+    pre_syscall_callbacks[__NR_fstat64] = pre_fstat64;
     
     post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
+    post_syscall_callbacks[__NR_getdents64] = post_getdents64;
+    post_syscall_callbacks[__NR_fstat64] = post_fstat64;
 
 
     /* Set up the character device */
@@ -370,7 +418,7 @@ static int cdev_mmap(struct file *filp, struct vm_area_struct *vma)
     if (process != NULL && process->mode == MODE_MONITOR)
     {
         DLOG("Memory mapping system call data buffer to user space");
-        vma->vm_flags |= (VM_LOCKED | VM_RESERVED);
+        vma->vm_flags |= VM_RESERVED;
         vma->vm_ops = &vm_syscall_ops;
         return 0;
     }
@@ -544,11 +592,23 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
  */
 static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long address, int *type)
 {
+    unsigned long offset;
+    struct page *page = NOPAGE_SIGBUS;
     char *syscall_data = processes[current->pid]->monitor->syscall_data;
+    
+    offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+    DLOG("Mapping offset: %ld", offset);
+    DLOG("address: %x,  syscall: %x, vm_start: %x,  vm_end: %x, vm_pgoff: %x", address, processes[current->pid]->monitor->syscall_data, vma->vm_start, vma->vm_end, vma->vm_pgoff);
+    if (offset > SYSCALL_BUFFER_SIZE)
+        goto out;
 
-    struct page *page = vmalloc_to_page(&(syscall_data[(address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT)]));
+    page = vmalloc_to_page(syscall_data + offset);
     get_page(page);
-    return page;
+    if (type)
+        *type = VM_FAULT_MINOR;
+
+    out:
+        return page;
 }
 
 /*
@@ -636,6 +696,7 @@ void *sclmalloc(unsigned int size)
     }
     
     /* Allocate */
+    DLOG("Allocated %d bytes at offset %d", size, proc_mon->syscall_offset);
     proc_mon->syscall_offset += size;
     return alloced_mem;
 }
@@ -751,7 +812,7 @@ void seek_to_next_syscall_entry(void)
 
     /* Current log entry */
     log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
-    
+
     /* Check limit */
     next_offset = monitor->syscall_offset +
                   sizeof(*log_entry) - 
@@ -789,6 +850,7 @@ void seek_to_next_syscall_entry(void)
     /* Next log entry */
     monitor->syscall_offset = next_offset;
     log_entry = (syscall_log_entry_t*) (monitor->syscall_data + next_offset);
+    DLOG("Next system call log entry - child_id: %d, call_no: %d, return_value: %d", log_entry->child_id, log_entry->call_no, log_entry->return_value);
 
     /* Wake next process on queue if ID matches */
     list_for_each_safe(pos, tmp, &(monitor->syscall_queue.list))
