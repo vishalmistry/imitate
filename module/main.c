@@ -15,6 +15,7 @@
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <asm/uaccess.h>
+#include "syscall_intercepts/intercepts.h"
 #include "main.h"
 
 /*
@@ -40,7 +41,11 @@ void* post_syscall_callbacks[NR_syscalls];
 /*
  * Process list
  */
-static process_t *processes[PID_MAX_LIMIT];
+process_t *processes[PID_MAX_LIMIT];
+
+/*
+ * Stored return addresses
+ */
 static unsigned long syscall_return_addresses[PID_MAX_LIMIT];
 
 /*
@@ -83,160 +88,11 @@ module_param(dev_major, ushort, 0000);
 MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " character device");
 
 /*
- * General Prototypes
+ * Pre-/Post- System call callback prototypes
  */
-asmlinkage long *pre_syscall_callback(long syscall_no,
-                                      unsigned long syscall_return_addr,
-                                      syscall_args_t syscall_args);
-asmlinkage unsigned long post_syscall_callback(long syscall_return_value, 
-                                               unsigned long syscall_return_addr, 
-                                               syscall_args_t syscall_args);
-void write_syscall_log_entry(unsigned short call_no, 
-                             long ret_val, 
-                             char *out_param, 
-                             unsigned long out_param_len);
-syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no);
-void seek_to_next_syscall_entry(void);
+asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_return_addr, syscall_args_t syscall_args);
+asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsigned long syscall_return_addr, syscall_args_t syscall_args);
 
-
-void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
-{
-    process_t *process = processes[current->pid];
-    syscall_log_entry_t *entry;
-
-    if (process->mode == MODE_REPLAY)
-    {
-        entry = get_next_syscall_log_entry(__NR_clock_gettime);
-
-        if (copy_to_user(tp, (struct timespec __user*) &(entry->out_param), sizeof(struct timespec)))
-            goto copy_error;
-
-        replay_value(process, entry);
-    }
-
-    return;
-
-    copy_error:
-        REPLAY_COPY_ERR(process, __NR_clock_gettime);
-}
-
-void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
-{
-    write_syscall_log_entry(__NR_clock_gettime, return_value, (char*) tp, sizeof(struct timespec));
-}
-
-void pre_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
-{
-    process_t *process = processes[current->pid];
-    syscall_log_entry_t *entry;
-
-    if (process->mode == MODE_REPLAY)
-    {
-        entry = get_next_syscall_log_entry(__NR_getdents64);
-
-        if (entry->return_value > 0)
-            if (copy_to_user(dirent, (struct linux_dirent64 __user*) &(entry->out_param), entry->return_value))
-                goto copy_error;
-
-        replay_value(process, entry);
-    }
-
-    return;
-
-    copy_error:
-        REPLAY_COPY_ERR(process, __NR_getdents64);
-}
-
-void post_getdents64(long return_value, unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
-{
-    write_syscall_log_entry(__NR_getdents64, return_value, (char*) dirent, return_value > 0 ? return_value : 0);
-}
-
-void pre_fstat64(unsigned long fd, struct stat64 __user *statbuf)
-{
-    process_t *process = processes[current->pid];
-    syscall_log_entry_t *entry;
-
-    if (process->mode == MODE_REPLAY)
-    {
-        entry = get_next_syscall_log_entry(__NR_fstat64);
-
-        if (entry->return_value == 0)
-            if (copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64)))
-                goto copy_error;
-
-        replay_value(process, entry);
-    }
-    
-    return;
-
-    copy_error:
-        REPLAY_COPY_ERR(process, __NR_fstat64);
-}
-
-void post_fstat64(long return_value, unsigned long fd, struct stat64 __user *statbuf)
-{
-    write_syscall_log_entry(__NR_fstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
-}
-
-void pre_lstat64(char __user *filename, struct stat64 __user *statbuf)
-{
-    process_t *process = processes[current->pid];
-    syscall_log_entry_t *entry;
-
-    if (process->mode == MODE_REPLAY)
-    {
-        entry = get_next_syscall_log_entry(__NR_lstat64);
-
-        if (entry->return_value == 0)
-            if (copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64)))
-                goto copy_error;
-
-        replay_value(process, entry);
-    }
-
-    return;
-
-    copy_error:
-        REPLAY_COPY_ERR(process, __NR_lstat64);
-}
-
-void post_lstat64(long return_value, char __user *filename, struct stat64 __user *statbuf)
-{
-    write_syscall_log_entry(__NR_lstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
-}
-
-void pre_exit_group(int error_code)
-{
-    process_t *process = processes[current->pid];
-    monitor_t *monitor = process->monitor;
-    syscall_log_entry_t *entry;
-
-    if (process->mode == MODE_RECORD)
-    {
-        write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
-
-        /* Last process */
-        if (process->child_id == 1)
-        {
-            /* Force monitor to write system call data */
-            down(&(monitor->data_write_complete_sem));
-            monitor->ready_data.type = SYSCALL_DATA;
-            monitor->ready_data.size = monitor->syscall_offset;
-            up(&(monitor->data_available_sem));
-        }
-    }
-    else if (process->mode == MODE_REPLAY)
-    {
-        entry = get_next_syscall_log_entry(__NR_exit_group);
-        *(&error_code) = entry->return_value;
-    }
-
-    /* Tell monitor that proc has exited */
-    down(&(monitor->data_write_complete_sem));
-    monitor->ready_data.type = APP_EXIT;
-    up(&(monitor->data_available_sem));
-}
 
 asmlinkage void empty_callback(void)
 {
@@ -662,7 +518,7 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
     char *syscall_data = processes[current->pid]->monitor->syscall_data;
     
     offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
-    DLOG("Mapping offset: %ld", offset);
+    VDLOG("Mapping offset: %ld", offset);
 
     if (offset > SYSCALL_BUFFER_SIZE)
         goto out;
@@ -743,203 +599,4 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
     return syscall_return_addresses[current->pid];
 }
 
-/*
- * Helper functions
- */
-void *sclmalloc(unsigned int size)
-{
-    monitor_t *proc_mon = processes[current->pid]->monitor;
-    void* alloced_mem = (void*) (proc_mon->syscall_data + proc_mon->syscall_offset);
 
-    if (size > (SYSCALL_BUFFER_SIZE - proc_mon->syscall_offset))
-    {
-        DLOG("Log memory request: %d. Free: %d of %d bytes.", size, 
-            (SYSCALL_BUFFER_SIZE - proc_mon->syscall_offset),
-            SYSCALL_BUFFER_SIZE);
-        LOG("Out of log memory!");
-        return NULL;
-    }
-    
-    /* Allocate */
-    DLOG("Allocated %d bytes at offset %d", size, proc_mon->syscall_offset);
-    proc_mon->syscall_offset += size;
-    return alloced_mem;
-}
-
-void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_param, unsigned long out_param_len)
-{
-    process_t *process = processes[current->pid];
-    monitor_t *monitor = process->monitor;
-    struct semaphore *buffer_sem = &(monitor->syscall_sem);
-    syscall_log_entry_t* current_data;
-
-    /* Lock the buffer semaphore */
-    down(buffer_sem);
-    
-    DLOG("Allocating %d bytes in System call buffer",
-		(unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
-
-    while (! (current_data = (syscall_log_entry_t*) sclmalloc(sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len)))
-    {
-        /* If the offset was 0, then the buffer is too small */
-        if (monitor->syscall_offset == 0)
-        {
-            ERROR("System call %d from PID %d generated more data than the size of the record buffer!", call_no, current->pid);
-            ERROR("System call was _NOT_ recorded");
-            goto no_mem_fail;
-        }
-
-        /* Data is not written */
-        DLOG("Waiting for monitor of PID %d to complete writing to disk", current->pid);
-        down(&(monitor->data_write_complete_sem));
-        
-        monitor->ready_data.type = SYSCALL_DATA;
-        monitor->ready_data.size = monitor->syscall_offset;
-
-        /* Data is available */
-        DLOG("Sending system call data available message to monitor of PID %d", current->pid);
-        up(&(monitor->data_available_sem));
-
-        /* Wait for write to complete before trying again */
-        down(&(monitor->data_write_complete_sem));
-        monitor->ready_data.type = NO_DATA;
-        up(&(monitor->data_available_sem));
-    }
-
-    current_data->child_id = process->child_id;
-    current_data->call_no = call_no;
-    current_data->return_value = ret_val;
-    current_data->out_param_len = out_param_len;
-    if (out_param_len != 0)
-        if (copy_from_user(&(current_data->out_param), out_param, out_param_len))
-        {
-            ERROR("Failed to copy out parameter data for system call %d for process %d (PID: %d)",
-                current_data->call_no,
-                process->child_id,
-                current->pid);
-            ERROR("Out parameter data may be corrupted!");
-        }
-
-    DLOG("Wrote record - child_id: %d, call_no: %d, return_value: %ld", 
-        current_data->child_id, 
-        current_data->call_no, 
-        current_data->return_value);
-    
-    no_mem_fail:
-        /* Unlock the buffer semaphore */
-        up(buffer_sem);
-}
-
-syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
-{
-    process_t *process = processes[current->pid];
-    monitor_t *monitor = process->monitor;
-    struct semaphore *buffer_sem = &(monitor->syscall_sem);
-    syscall_log_entry_t* log_entry = NULL;
-    struct process_list *queue_item;
-
-    /* Lock the buffer semaphore */
-    down(buffer_sem);
-
-    /* Current log entry */
-    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
-    
-    while (process->child_id != log_entry->child_id)
-    {
-        DLOG("System call log entry out of order. Current process: %d, expected: %d", process->child_id, log_entry->child_id);
-        DLOG("Queuing and blocking process %d (PID %d)", process->child_id, process->pid);
-
-        queue_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
-        list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
-
-        set_current_state(TASK_UNINTERRUPTIBLE);
-        up(buffer_sem);
-        schedule();
-        
-        DLOG("Blocked process %d (PID: %d) has been woken up.", process->child_id, process->pid);
-        down(buffer_sem);
-        log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
-    }
-
-    if (log_entry->call_no != call_no)
-    {
-        /* Kill process */
-    }
-
-    /* Unlock the buffer semaphore */
-    up(buffer_sem);
-
-    return log_entry;
-}
-
-void seek_to_next_syscall_entry(void)
-{
-    monitor_t *monitor = processes[current->pid]->monitor;
-    struct semaphore *buffer_sem = &(monitor->syscall_sem);
-    syscall_log_entry_t* log_entry = NULL;
-    struct list_head *pos, *tmp;
-    struct process_list *item;
-    unsigned long next_offset = 0;
-
-    down(buffer_sem);
-
-    /* Current log entry */
-    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
-
-    /* Check limit */
-    next_offset = monitor->syscall_offset +
-                  sizeof(*log_entry) - 
-                  sizeof(log_entry->out_param) + 
-                  log_entry->out_param_len;
-    if (next_offset >= monitor->syscall_size)
-    {
-        /* Request more data */
-        DLOG("Waiting for monitor of PID %d to complete reading from disk", current->pid);
-
-        /* Data is not read */
-        down(&(monitor->data_write_complete_sem));
-        
-        monitor->ready_data.type = SYSCALL_DATA;
-        monitor->ready_data.size = 0;
-
-        /* Data is available */
-        DLOG("Sending system call data unavailable message to monitor of PID %d", current->pid);
-        up(&(monitor->data_available_sem));
-
-        /* Wait for read to complete before trying again */
-        down(&(monitor->data_write_complete_sem));
-        monitor->ready_data.type = NO_DATA;
-        up(&(monitor->data_available_sem));
- 
-        if (monitor->syscall_size == 0)
-        {
-            DLOG("System call log for PID %d is empty", current->pid);
-            monitor->syscall_offset = 0;
-            goto no_more_calls;
-        }
-        next_offset = 0;
-    }
-
-    /* Next log entry */
-    monitor->syscall_offset = next_offset;
-    log_entry = (syscall_log_entry_t*) (monitor->syscall_data + next_offset);
-    DLOG("Next system call log entry - child_id: %d, call_no: %d, return_value: %ld", log_entry->child_id, log_entry->call_no, log_entry->return_value);
-
-    /* Wake next process on queue if ID matches */
-    list_for_each_safe(pos, tmp, &(monitor->syscall_queue.list))
-    {
-        item = list_entry(pos, struct process_list, list);
-        if (item->process->child_id == log_entry->child_id)
-        {
-            DLOG("Waking up previously blocked process %d (PID: %d)", item->process->child_id, item->process->pid);
-            wake_up_process(find_task_by_pid(item->process->pid));
-            list_del(pos);
-            kfree(item);
-            break;
-        }
-    }
-
-    no_more_calls:
-    /* Unlock the buffer semaphore */
-    up(buffer_sem);
-}

@@ -1,3 +1,8 @@
+/*
+ * Imitate record/replay framework kernel module
+ * Copyright (c) 2007, Vishal Mistry
+ */
+
 #ifndef _IMITATE_PRIVATE_H
 #define _IMITATE_PRIVATE_H
 
@@ -25,28 +30,28 @@
 #define MODE_REPLAY     3
 
 /*
- * Replay result macros
- */
-#define replay_void(P)    seek_to_next_syscall_entry(); \
-                          (P)->replay_syscall = 1
-#define replay_value(P,X) seek_to_next_syscall_entry(); \
-                          (P)->replay_syscall = 1; \
-                          (P)->syscall_replay_value = (X)->return_value
-
-/*
  * Debug message macros
  */
-#ifdef DEBUG
+#if DEBUG > 0
 #define DLOG(msg, args...) (printk(KERN_DEBUG MODULE_NAME " (debug): " msg "\n", ##args))
 #else
 #define DLOG(msg, args...) /* No Message */
 #endif
 
+#if DEBUG > 1
+#define VDLOG(msg, args...) DLOG(msg, ##args)
+#else
+#define VDLOG(msg, args...) /* No Message */
+#endif
+
+#if DEBUG > 2
+#define VVDLOG(msg, args...) DLOG(msg, ##args)
+#else
+#define VVDLOG(msg, args...) /* No Message */
+#endif
+
 #define LOG(msg, args...) (printk(KERN_INFO MODULE_NAME ": " msg "\n", ##args))
 #define ERROR(msg, args...) (printk(KERN_ERR MODULE_NAME ": " msg "\n", ##args))
-
-#define REPLAY_COPY_ERR(P,X) ERROR("Unable to copy replay data for process %d (PID %d). Call %d not replayed.", (P)->child_id, current->pid, (X))
-
 
 /*
  * Type definition of a system call
@@ -122,5 +127,10 @@ typedef struct
     long arg5;
     long arg6;
 } syscall_args_t;
+
+/*
+ * Process list
+ */
+extern process_t *processes[PID_MAX_LIMIT];
 
 #endif

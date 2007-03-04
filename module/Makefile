@@ -1,13 +1,22 @@
 ARCH = i386
 MODULE = imitate
-EXTRA_CFLAGS = -DDEBUG -DSYS_CALL_TABLE_ADDR=0xc02dd4c0
+EXTRA_CFLAGS = -DDEBUG=1 -DSYS_CALL_TABLE_ADDR=0xc02dd4c0
+
+SYSCALL_INTERCEPTS = syscall_intercepts/exit_group.o \
+                     syscall_intercepts/clock_gettime.o \
+                     syscall_intercepts/getdents64.o \
+                     syscall_intercepts/fstat64.o \
+                     syscall_intercepts/lstat64.o
 
 obj-m += $(MODULE).o
-$(MODULE)-objs += main.o arch/$(ARCH)/syscall_intercept.o
+$(MODULE)-objs += main.o \
+                  syscall_log.o \
+                  arch/$(ARCH)/syscall_intercept.o \
+                  $(SYSCALL_INTERCEPTS)
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
-	rm -f *~ *.o *.mod.c *.mod.o .*.cmd arch/i386/.*.cmd
+	rm -f *~ *.o *.mod.c *.mod.o .*.cmd arch/i386/.*.cmd syscall_intercepts/.*.cmd
 	rm -rf .tmp_versions
 
 install: $(MODULE).ko
@@ -19,3 +28,4 @@ uninstall:
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+	rm -f Module.symvers
