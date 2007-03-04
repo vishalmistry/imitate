@@ -45,6 +45,8 @@
 #define LOG(msg, args...) (printk(KERN_INFO MODULE_NAME ": " msg "\n", ##args))
 #define ERROR(msg, args...) (printk(KERN_ERR MODULE_NAME ": " msg "\n", ##args))
 
+#define REPLAY_COPY_ERR(P,X) ERROR("Unable to copy replay data for process %d (PID %d). Call %d not replayed.", (P)->child_id, current->pid, (X))
+
 
 /*
  * Type definition of a system call

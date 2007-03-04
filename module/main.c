@@ -15,7 +15,6 @@
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <asm/uaccess.h>
-#include "syscall_types.h"
 #include "main.h"
 
 /*
@@ -108,9 +107,17 @@ void pre_clock_gettime(clockid_t clk_id, struct timespec __user *tp)
     if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_clock_gettime);
-        copy_to_user(tp, (struct timespec __user*) &(entry->out_param), sizeof(struct timespec));
+
+        if (copy_to_user(tp, (struct timespec __user*) &(entry->out_param), sizeof(struct timespec)))
+            goto copy_error;
+
         replay_value(process, entry);
     }
+
+    return;
+
+    copy_error:
+        REPLAY_COPY_ERR(process, __NR_clock_gettime);
 }
 
 void post_clock_gettime(long return_value, clockid_t clk_id, struct timespec __user *tp)
@@ -126,12 +133,18 @@ void pre_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsig
     if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_getdents64);
+
         if (entry->return_value > 0)
-        {
-            copy_to_user(dirent, (struct linux_dirent64 __user*) &(entry->out_param), entry->return_value);
-        }
+            if (copy_to_user(dirent, (struct linux_dirent64 __user*) &(entry->out_param), entry->return_value))
+                goto copy_error;
+
         replay_value(process, entry);
     }
+
+    return;
+
+    copy_error:
+        REPLAY_COPY_ERR(process, __NR_getdents64);
 }
 
 void post_getdents64(long return_value, unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
@@ -147,17 +160,50 @@ void pre_fstat64(unsigned long fd, struct stat64 __user *statbuf)
     if (process->mode == MODE_REPLAY)
     {
         entry = get_next_syscall_log_entry(__NR_fstat64);
+
         if (entry->return_value == 0)
-        {
-            copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64));
-        }
+            if (copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64)))
+                goto copy_error;
+
         replay_value(process, entry);
     }
+    
+    return;
+
+    copy_error:
+        REPLAY_COPY_ERR(process, __NR_fstat64);
 }
 
 void post_fstat64(long return_value, unsigned long fd, struct stat64 __user *statbuf)
 {
     write_syscall_log_entry(__NR_fstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
+}
+
+void pre_lstat64(char __user *filename, struct stat64 __user *statbuf)
+{
+    process_t *process = processes[current->pid];
+    syscall_log_entry_t *entry;
+
+    if (process->mode == MODE_REPLAY)
+    {
+        entry = get_next_syscall_log_entry(__NR_lstat64);
+
+        if (entry->return_value == 0)
+            if (copy_to_user(statbuf, (struct stat64 __user*) &(entry->out_param), sizeof(struct stat64)))
+                goto copy_error;
+
+        replay_value(process, entry);
+    }
+
+    return;
+
+    copy_error:
+        REPLAY_COPY_ERR(process, __NR_lstat64);
+}
+
+void post_lstat64(long return_value, char __user *filename, struct stat64 __user *statbuf)
+{
+    write_syscall_log_entry(__NR_lstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
 }
 
 void pre_exit_group(int error_code)
@@ -252,15 +298,18 @@ static int __init kmod_init(void)
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
     sys_call_table[__NR_getdents64] = syscall_intercept;
     sys_call_table[__NR_fstat64] = syscall_intercept;
+    sys_call_table[__NR_lstat64] = syscall_intercept;
 
     pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
     pre_syscall_callbacks[__NR_clock_gettime] = pre_clock_gettime;
     pre_syscall_callbacks[__NR_getdents64] = pre_getdents64;
     pre_syscall_callbacks[__NR_fstat64] = pre_fstat64;
+    pre_syscall_callbacks[__NR_lstat64] = pre_lstat64;
     
     post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
     post_syscall_callbacks[__NR_getdents64] = post_getdents64;
     post_syscall_callbacks[__NR_fstat64] = post_fstat64;
+    post_syscall_callbacks[__NR_lstat64] = post_lstat64;
 
 
     /* Set up the character device */
@@ -543,13 +592,21 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             {
                 case SYSCALL_DATA:
                     DLOG("Resetting system call buffer offset for monitor %d", current->pid);
-                    copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
+                    if (copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data)))
+                    {
+                        ERROR("CRITICAL: Failed to copy callback data from monitor with PID %d. Resetting", current->pid);
+                        process->monitor->ready_data.size = 0;
+                    }
                     process->monitor->syscall_size = process->monitor->ready_data.size;
                     process->monitor->syscall_offset = 0;
                     break;
                 case SCHED_DATA:
                     DLOG("Resetting scheduler buffer offset for monitor %d", current->pid);
-                    copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data));
+                    if (copy_from_user(&(process->monitor->ready_data), (void __user*) arg, sizeof(process->monitor->ready_data)))
+                    {
+                        ERROR("CRITICAL: Failed to copy callback data from monitor with PID %d. Resetting", current->pid);
+                        process->monitor->ready_data.size = 0;
+                    }
                     process->monitor->sched_size = process->monitor->ready_data.size;
                     process->monitor->sched_offset = 0;
                     break;
@@ -566,12 +623,20 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Waiting for data to become available for monitor %d", current->pid);
             down(&(process->monitor->data_available_sem));
 
-            copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data));
+            if (copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data)))
+            {
+                ERROR("CRITICAL: Failed to copy callback data to monitor with PID %d. Cannot recover!", current->pid);
+            }
             break;
 
         case IMITATE_PREP_REPLAY:
             process = processes[current->pid];
-            copy_from_user(&prepdata, (void __user*) arg, sizeof(prepdata));
+            if (copy_from_user(&prepdata, (void __user*) arg, sizeof(prepdata)))
+            {
+                ERROR("CRITICAL: Failed to copy replay preparation data from monitor with PID %d. Cannot recover!", current->pid);
+                prepdata.syscall_size = 0;
+                prepdata.sched_size = 0;
+            }
             process->monitor->syscall_size = prepdata.syscall_size;
             process->monitor->sched_size = prepdata.sched_size;
             break;
@@ -598,7 +663,7 @@ static struct page *vma_syscall_nopage(struct vm_area_struct *vma, unsigned long
     
     offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
     DLOG("Mapping offset: %ld", offset);
-    DLOG("address: %x,  syscall: %x, vm_start: %x,  vm_end: %x, vm_pgoff: %x", address, processes[current->pid]->monitor->syscall_data, vma->vm_start, vma->vm_end, vma->vm_pgoff);
+
     if (offset > SYSCALL_BUFFER_SIZE)
         goto out;
 
@@ -724,8 +789,8 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
             goto no_mem_fail;
         }
 
-        DLOG("Waiting for monitor of PID %d to complete writing to disk", current->pid);
         /* Data is not written */
+        DLOG("Waiting for monitor of PID %d to complete writing to disk", current->pid);
         down(&(monitor->data_write_complete_sem));
         
         monitor->ready_data.type = SYSCALL_DATA;
@@ -746,15 +811,23 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
     current_data->return_value = ret_val;
     current_data->out_param_len = out_param_len;
     if (out_param_len != 0)
-    {
-        copy_from_user(&(current_data->out_param), out_param, out_param_len);
-    }
+        if (copy_from_user(&(current_data->out_param), out_param, out_param_len))
+        {
+            ERROR("Failed to copy out parameter data for system call %d for process %d (PID: %d)",
+                current_data->call_no,
+                process->child_id,
+                current->pid);
+            ERROR("Out parameter data may be corrupted!");
+        }
 
-    DLOG("Wrote record - child_id: %d, call_no: %d, return_value: %ld", current_data->child_id, current_data->call_no, current_data->return_value);
+    DLOG("Wrote record - child_id: %d, call_no: %d, return_value: %ld", 
+        current_data->child_id, 
+        current_data->call_no, 
+        current_data->return_value);
     
     no_mem_fail:
-    /* Unlock the buffer semaphore */
-    up(buffer_sem);
+        /* Unlock the buffer semaphore */
+        up(buffer_sem);
 }
 
 syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
@@ -850,7 +923,7 @@ void seek_to_next_syscall_entry(void)
     /* Next log entry */
     monitor->syscall_offset = next_offset;
     log_entry = (syscall_log_entry_t*) (monitor->syscall_data + next_offset);
-    DLOG("Next system call log entry - child_id: %d, call_no: %d, return_value: %d", log_entry->child_id, log_entry->call_no, log_entry->return_value);
+    DLOG("Next system call log entry - child_id: %d, call_no: %d, return_value: %ld", log_entry->child_id, log_entry->call_no, log_entry->return_value);
 
     /* Wake next process on queue if ID matches */
     list_for_each_safe(pos, tmp, &(monitor->syscall_queue.list))
