@@ -581,7 +581,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
         return NULL;
     }
 
-    VVDLOG("Entered pre_syscall_callback()");
+    VVDLOG("Entered pre_syscall_callback() - syscall_no: %ld", syscall_no);
     
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
@@ -598,21 +598,12 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
         VVDLOG("Returned from pre_syscall_callback handler for call %ld", syscall_no);
     }
 
-    switch (process->mode)
-    {
-        /* Application being recorded */
-        case MODE_RECORD:
-            process->last_syscall_no = (unsigned short) syscall_no;
-            break;
+    process->last_syscall_no = (unsigned short) syscall_no;
 
-        /* Application being replayed */
-        case MODE_REPLAY:
-            if (process->replay_syscall)
-            {
-                VVDLOG("Replaying call return value for call %ld", syscall_no);
-                return &(process->syscall_replay_value);
-            }
-            break;
+    if ((process->mode == MODE_REPLAY) && (process->replay_syscall))
+    {
+        VVDLOG("Replaying call return value for call %ld", syscall_no);
+        return &(process->syscall_replay_value);
     }
 
     VVDLOG("Leaving pre_syscall_callback()");
