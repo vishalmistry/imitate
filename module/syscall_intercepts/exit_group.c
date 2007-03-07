@@ -12,7 +12,7 @@ void pre_exit_group(int error_code)
     monitor_t *monitor = process->monitor;
     syscall_log_entry_t *entry;
 
-    if (process->mode == MODE_RECORD)
+    if (recording(process))
     {
         write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
 
@@ -26,7 +26,7 @@ void pre_exit_group(int error_code)
             up(&(monitor->data_available_sem));
         }
     }
-    else if (process->mode == MODE_REPLAY)
+    else if (replaying(process))
     {
         entry = get_next_syscall_log_entry(__NR_exit_group);
         *(&error_code) = entry->return_value;

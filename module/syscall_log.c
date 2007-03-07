@@ -134,6 +134,7 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
 
     if (log_entry->call_no != call_no)
     {
+        DLOG("Process %d (PID: %d) is expected to replay system call %d, but is actually trying to replay %d!", process->child_id, current->pid, log_entry->call_no, call_no);
         /* Kill process */
     }
 

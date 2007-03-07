@@ -16,6 +16,12 @@
 #include "intercepts.h"
 
 /*
+ * Macros to increase readability
+ */
+#define replaying(P)    (P)->mode == MODE_REPLAY
+#define recording(P)    (P)->mode == MODE_RECORD
+
+/*
  * Replay result macros
  */
 #define replay_void(P)    seek_to_next_syscall_entry(); \

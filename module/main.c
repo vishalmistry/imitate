@@ -162,18 +162,30 @@ static int __init kmod_init(void)
 
     /* Hook the system call intercepts */
     DLOG("Attaching system call intercepts");
+    sys_call_table[__NR_open] = syscall_intercept;
+    sys_call_table[__NR_read] = syscall_intercept;
+    sys_call_table[__NR_close] = syscall_intercept;
+    sys_call_table[__NR_mmap2] = syscall_intercept;
     sys_call_table[__NR_exit_group] = syscall_intercept;
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
     sys_call_table[__NR_getdents64] = syscall_intercept;
     sys_call_table[__NR_fstat64] = syscall_intercept;
     sys_call_table[__NR_lstat64] = syscall_intercept;
 
+    pre_syscall_callbacks[__NR_open] = pre_open;
+    pre_syscall_callbacks[__NR_read] = pre_read;
+    pre_syscall_callbacks[__NR_close] = pre_close;
+    pre_syscall_callbacks[__NR_mmap2] = pre_mmap2;
     pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
     pre_syscall_callbacks[__NR_clock_gettime] = pre_clock_gettime;
     pre_syscall_callbacks[__NR_getdents64] = pre_getdents64;
     pre_syscall_callbacks[__NR_fstat64] = pre_fstat64;
     pre_syscall_callbacks[__NR_lstat64] = pre_lstat64;
     
+    post_syscall_callbacks[__NR_open] = post_open;
+    post_syscall_callbacks[__NR_read] = post_read;
+    post_syscall_callbacks[__NR_close] = post_close;
+    post_syscall_callbacks[__NR_mmap2] = post_mmap2;
     post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
     post_syscall_callbacks[__NR_getdents64] = post_getdents64;
     post_syscall_callbacks[__NR_fstat64] = post_fstat64;
@@ -611,7 +623,7 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
 {
     process_t *process = processes[current->pid];
 
-    if(process != NULL && process->mode == MODE_RECORD)
+    if(process != NULL && process->mode >= MODE_RECORD)
     {
         VVDLOG("Dispatching post_syscall_callback handler for call %d", process->last_syscall_no);
         ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(

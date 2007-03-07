@@ -2,7 +2,11 @@ ARCH = i386
 MODULE = imitate
 EXTRA_CFLAGS = -DDEBUG=1
 
-SYSCALL_INTERCEPTS = syscall_intercepts/exit_group.o \
+SYSCALL_INTERCEPTS = syscall_intercepts/open.o \
+                     syscall_intercepts/read.o \
+                     syscall_intercepts/close.o \
+                     syscall_intercepts/mmap2.o \
+                     syscall_intercepts/exit_group.o \
                      syscall_intercepts/clock_gettime.o \
                      syscall_intercepts/getdents64.o \
                      syscall_intercepts/fstat64.o \

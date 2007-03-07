@@ -11,7 +11,7 @@ void pre_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsig
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
 
-    if (process->mode == MODE_REPLAY)
+    if (replaying(process))
     {
         entry = get_next_syscall_log_entry(__NR_getdents64);
 
@@ -30,5 +30,8 @@ void pre_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent, unsig
 
 void post_getdents64(long return_value, unsigned int fd, struct linux_dirent64 __user *dirent, unsigned int count)
 {
-    write_syscall_log_entry(__NR_getdents64, return_value, (char*) dirent, return_value > 0 ? return_value : 0);
+    process_t *process = processes[current->pid];
+
+    if (recording(process))
+        write_syscall_log_entry(__NR_getdents64, return_value, (char*) dirent, return_value > 0 ? return_value : 0);
 }

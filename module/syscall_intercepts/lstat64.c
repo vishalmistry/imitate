@@ -11,7 +11,7 @@ void pre_lstat64(char __user *filename, struct stat64 __user *statbuf)
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
 
-    if (process->mode == MODE_REPLAY)
+    if (replaying(process))
     {
         entry = get_next_syscall_log_entry(__NR_lstat64);
 
@@ -30,5 +30,8 @@ void pre_lstat64(char __user *filename, struct stat64 __user *statbuf)
 
 void post_lstat64(long return_value, char __user *filename, struct stat64 __user *statbuf)
 {
-    write_syscall_log_entry(__NR_lstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
+    process_t *process = processes[current->pid];
+
+    if (recording(process))
+        write_syscall_log_entry(__NR_lstat64, return_value, (char*) statbuf, return_value == 0 ? sizeof(struct stat64) : 0);
 }
