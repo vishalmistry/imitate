@@ -3,6 +3,29 @@
 module="imitate"
 device="imitate"
 mode="664"
+symfile="/proc/kallsyms"
+
+syscall_awk='$0 ~ /sys_call_table/ { addr = $1; count += 1 } END { if (count == 1) { print "0x" addr } else { print "ERROR" } }'
+syscall_addr=$(awk "${syscall_awk}" "${symfile}")
+
+echo "System call table line in '${symfile}':"
+grep sys_call_table "${symfile}"
+echo
+echo -n "System call table address is ${syscall_addr}. Is this correct? (yes/no) [no]: "
+
+while true; do
+    read REPLY
+    if [ "$REPLY" != "yes" ] && [ "$REPLY" != "no" ] && [ "$REPLY" != "" ]; then
+        echo -n "Please answer 'yes' or 'no' [no]: "
+    else
+        break
+    fi
+done
+
+if [ "$REPLY" != "yes" ]; then
+    echo "Aborting."
+    exit 1
+fi
 
 # sync disks
 sync
@@ -11,7 +34,7 @@ sync
 rmmod ${module}
 
 # install modules with arguments given
-/sbin/insmod ./${module}.ko $* || exit 1
+/sbin/insmod ./${module}.ko sys_call_table_addr=${syscall_addr} $* || exit 1
 
 # remove stale nodes
 rm -f /dev/${device}

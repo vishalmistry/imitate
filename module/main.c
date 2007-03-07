@@ -34,7 +34,7 @@ extern void syscall_intercept(void);
  * System call table and the backup
  */
 syscall_t original_sys_call_table[NR_syscalls];
-static syscall_t *sys_call_table = (syscall_t*) SYS_CALL_TABLE_ADDR;
+static syscall_t *sys_call_table;
 void* pre_syscall_callbacks[NR_syscalls];
 void* post_syscall_callbacks[NR_syscalls];
 
@@ -87,6 +87,11 @@ static ushort dev_major = 0;
 module_param(dev_major, ushort, 0000);
 MODULE_PARM_DESC(dev_major, "Device major number for the " MODULE_NAME " character device");
 
+static long sys_call_table_addr = 0;
+module_param(sys_call_table_addr, long, 0000);
+MODULE_PARM_DESC(sys_call_table_addr, "Address of system call table. Use /proc/kallsyms or System.map to obtain this value. THIS VALUE MUST BE CORRECT AS THIS MODULE WILL OVERWRITE MEMORY AT THIS ADDRESS! Supplying incorrect address will cause a system crash.");
+
+
 /*
  * Pre-/Post- System call callback prototypes
  */
@@ -114,8 +119,16 @@ static int __init kmod_init(void)
 
     DLOG("Loading " MODULE_NAME " kernel module");
 
-    DLOG("SYS_CALL_TABLE_ADDR = %x", SYS_CALL_TABLE_ADDR);
-    DLOG("SYS_EXIT = %x", (int) sys_call_table[__NR_exit]);
+    if (!sys_call_table_addr)
+    {
+        ERROR("System call table address parameter (sys_call_table_addr) not specified. Aborting module load.");
+        return -EINVAL;
+    }
+
+    sys_call_table = (syscall_t*) sys_call_table_addr;
+
+    DLOG("sys_call_table_addr = %lx", sys_call_table_addr);
+    DLOG("sys_exit = %lx", (long) sys_call_table[__NR_exit]);
 
     /* Register character device */
     if (dev_major)
@@ -149,7 +162,6 @@ static int __init kmod_init(void)
 
     /* Hook the system call intercepts */
     DLOG("Attaching system call intercepts");
-    sys_call_table[__NR_exit] = syscall_intercept;
     sys_call_table[__NR_exit_group] = syscall_intercept;
     sys_call_table[__NR_clock_gettime] = syscall_intercept;
     sys_call_table[__NR_getdents64] = syscall_intercept;
@@ -452,6 +464,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                     {
                         ERROR("CRITICAL: Failed to copy callback data from monitor with PID %d. Resetting", current->pid);
                         process->monitor->ready_data.size = 0;
+                        result = -EFAULT;
+                        goto allocproc_fail;
                     }
                     process->monitor->syscall_size = process->monitor->ready_data.size;
                     process->monitor->syscall_offset = 0;
@@ -462,6 +476,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                     {
                         ERROR("CRITICAL: Failed to copy callback data from monitor with PID %d. Resetting", current->pid);
                         process->monitor->ready_data.size = 0;
+                        result = -EFAULT;
+                        goto allocproc_fail;
                     }
                     process->monitor->sched_size = process->monitor->ready_data.size;
                     process->monitor->sched_offset = 0;
@@ -477,11 +493,16 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
              * available
              */
             DLOG("Waiting for data to become available for monitor %d", current->pid);
-            down(&(process->monitor->data_available_sem));
+            if (down_interruptible(&(process->monitor->data_available_sem)))
+            {
+                return -EINTR;
+            }
+
 
             if (copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data)))
             {
                 ERROR("CRITICAL: Failed to copy callback data to monitor with PID %d. Cannot recover!", current->pid);
+                result = -EFAULT;
             }
             break;
 
@@ -547,10 +568,13 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
     {
         return NULL;
     }
+
+    VVDLOG("Entered pre_syscall_callback()");
     
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
     {
+        VVDLOG("Dispatching pre_syscall_callback handler for call %ld", syscall_no);
         process->replay_syscall = 0;
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
             syscall_args.arg1,
@@ -559,6 +583,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
             syscall_args.arg4,
             syscall_args.arg5,
             syscall_args.arg6);
+        VVDLOG("Returned from pre_syscall_callback handler for call %ld", syscall_no);
     }
 
     switch (process->mode)
@@ -572,11 +597,13 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
         case MODE_REPLAY:
             if (process->replay_syscall)
             {
+                VVDLOG("Replaying call return value for call %ld", syscall_no);
                 return &(process->syscall_replay_value);
             }
             break;
     }
 
+    VVDLOG("Leaving pre_syscall_callback()");
     return NULL;
 }
 
@@ -586,6 +613,7 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
 
     if(process != NULL && process->mode == MODE_RECORD)
     {
+        VVDLOG("Dispatching post_syscall_callback handler for call %d", process->last_syscall_no);
         ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(
             syscall_return_value,
             syscall_args.arg1,
@@ -594,6 +622,7 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
             syscall_args.arg4,
             syscall_args.arg5,
             syscall_args.arg6);
+        VVDLOG("Returned from post_syscall_callback handler for call %d", process->last_syscall_no);
     }
 
     return syscall_return_addresses[current->pid];

@@ -37,7 +37,9 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
     syscall_log_entry_t* current_data;
 
     /* Lock the buffer semaphore */
+    VVDLOG("Attempting to acquire system call buffer semaphore");
     down(buffer_sem);
+    VVDLOG("Acquired system call buffer semaphore");
     
     VVDLOG("Allocating %d bytes in system call buffer",
 		(unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
@@ -90,6 +92,7 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
 
     no_mem_fail:
         /* Unlock the buffer semaphore */
+        VVDLOG("Releasing system call buffer semaphore");
         up(buffer_sem);
 }
 
@@ -102,7 +105,9 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
     struct process_list *queue_item;
 
     /* Lock the buffer semaphore */
+    VVDLOG("Attempting to acquire system call buffer semaphore");
     down(buffer_sem);
+    VVDLOG("Acquired system call buffer semaphore");
 
     /* Current log entry */
     log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
@@ -116,11 +121,14 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
         list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
 
         set_current_state(TASK_UNINTERRUPTIBLE);
+        VVDLOG("Releasing system call buffer semaphore");
         up(buffer_sem);
         schedule();
         
         DLOG("Blocked process %d (PID: %d) has been woken up.", process->child_id, process->pid);
+        VVDLOG("Attempting to acquire system call buffer semaphore");
         down(buffer_sem);
+        VVDLOG("Acquired system call buffer semaphore");
         log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
     }
 
@@ -130,6 +138,7 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
     }
 
     /* Unlock the buffer semaphore */
+    VVDLOG("Releasing system call buffer semaphore");
     up(buffer_sem);
 
     return log_entry;
@@ -144,7 +153,9 @@ void seek_to_next_syscall_entry(void)
     struct process_list *item;
     unsigned long next_offset = 0;
 
+    VVDLOG("Attempting to acquire system call buffer semaphore");
     down(buffer_sem);
+    VVDLOG("Acquired system call buffer semaphore");
 
     /* Current log entry */
     log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
@@ -208,5 +219,6 @@ void seek_to_next_syscall_entry(void)
 
     no_more_calls:
     /* Unlock the buffer semaphore */
+    VVDLOG("Releasing system call buffer semaphore");
     up(buffer_sem);
 }

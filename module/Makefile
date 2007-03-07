@@ -1,6 +1,6 @@
 ARCH = i386
 MODULE = imitate
-EXTRA_CFLAGS = -DDEBUG=1 -DSYS_CALL_TABLE_ADDR=0xc02dd4c0
+EXTRA_CFLAGS = -DDEBUG=1
 
 SYSCALL_INTERCEPTS = syscall_intercepts/exit_group.o \
                      syscall_intercepts/clock_gettime.o \
