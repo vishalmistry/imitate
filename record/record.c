@@ -140,7 +140,7 @@ int main(int argc, char* argv[], char* envp[])
                     break;
 
                 case APP_KILLED:
-                    fprintf(stderr, "Recorded application killed by kernel driver.");
+                    fprintf(stderr, "Recorded application killed by kernel driver.\n");
                     break;
             }
         }

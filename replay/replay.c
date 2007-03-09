@@ -300,7 +300,7 @@ int main(int argc, char* argv[])
                     break;
 
                 case APP_KILLED:
-                    fprintf(stderr, "Replayed application killed by kernel driver.");
+                    fprintf(stderr, "Replayed application killed by kernel driver.\n");
                     break;
             }
         }
