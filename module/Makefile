@@ -1,6 +1,6 @@
 ARCH = i386
 MODULE = imitate
-EXTRA_CFLAGS = -DDEBUG=1
+EXTRA_CFLAGS = -DDEBUG=2
 
 SYSCALL_INTERCEPTS = syscall_intercepts/open.o \
                      syscall_intercepts/read.o \

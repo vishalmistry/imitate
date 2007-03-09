@@ -61,8 +61,8 @@ typedef void *syscall_t;
 /*
  * "Type definition" of a post-syscall callback
  */
-#define pre_syscall_callback_t void (*) (long, long, long, long, long, long)
-#define post_syscall_callback_t void (*) (long, long, long, long, long, long, long)
+#define pre_syscall_callback_t void (*) (syscall_args_t*)
+#define post_syscall_callback_t void (*) (long*, syscall_args_t*)
 
 typedef struct process process_t;
 typedef struct monitor monitor_t;

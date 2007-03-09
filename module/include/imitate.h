@@ -34,6 +34,7 @@
 #define SYSCALL_DATA 0x1
 #define SCHED_DATA   0x2
 #define APP_EXIT     0x4
+#define APP_KILLED   0x8
 
 /*
  * Buffer size of syscall storage (10 MB)

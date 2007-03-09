@@ -125,7 +125,7 @@ int main(int argc, char* argv[], char* envp[])
         syscall_log_file = fopen(fpath, "wb");
         free(fpath);
 
-        while (cbdata.type != APP_EXIT)
+        while (cbdata.type != APP_EXIT && cbdata.type != APP_KILLED)
         {
             if (ioctl(dev, IMITATE_MONITOR_CB, &cbdata) < 0)
             {
@@ -137,6 +137,10 @@ int main(int argc, char* argv[], char* envp[])
             {
                 case SYSCALL_DATA:
                     fwrite(syscall_log, cbdata.size, 1, syscall_log_file);
+                    break;
+
+                case APP_KILLED:
+                    fprintf(stderr, "Recorded application killed by kernel driver.");
                     break;
             }
         }

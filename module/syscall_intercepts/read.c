@@ -6,10 +6,12 @@
 
 #include "intercept.h"
 
-void pre_read(unsigned int fd, char __user *buf, size_t count)
+void pre_read(syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
+
+    char __user *buf = args->arg2;
 
     if (replaying(process))
     {
@@ -28,10 +30,12 @@ void pre_read(unsigned int fd, char __user *buf, size_t count)
         REPLAY_COPY_ERR(process, __NR_read);
 }
 
-void post_read(long return_value, unsigned int fd, char __user *buf, size_t count)
+void post_read(long *return_value, syscall_args_t* args)
 {
     process_t *process = processes[current->pid];
 
+    char __user *buf = args->arg2;
+
     if (recording(process))
-        write_syscall_log_entry(__NR_read, return_value, buf, return_value);
+        write_syscall_log_entry(__NR_read, *return_value, buf, *return_value);
 }

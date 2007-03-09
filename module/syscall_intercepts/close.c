@@ -6,7 +6,7 @@
 
 #include "intercept.h"
 
-void pre_close(unsigned int fd)
+void pre_close(syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
@@ -20,10 +20,10 @@ void pre_close(unsigned int fd)
     return;
 }
 
-void post_close(long return_value, unsigned int fd)
+void post_close(long *return_value, syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
 
     if (recording(process))
-        write_syscall_log_entry(__NR_close, return_value, NULL, 0);
+        write_syscall_log_entry(__NR_close, *return_value, NULL, 0);
 }

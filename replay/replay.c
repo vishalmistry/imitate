@@ -155,6 +155,12 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
             }
             else        /* Read succeeded */
             {
+/*                printf("child: %d, call_no: %d, return_value: %d, out_param_len: %d\n",
+                    syscall_log_entry->child_id,
+                    syscall_log_entry->call_no,
+                    syscall_log_entry->return_value,
+                    syscall_log_entry->out_param_len);
+*/
                 /* Read out_param if necessary */
                 if (syscall_log_entry->out_param_len > 0)
                 {
@@ -279,7 +285,7 @@ int main(int argc, char* argv[])
 
     if (app_pid > 0) /* Parent */
     {
-        while (cbdata.type != APP_EXIT)
+        while (cbdata.type != APP_EXIT && cbdata.type != APP_KILLED)
         {
             if (ioctl(dev, IMITATE_MONITOR_CB, &cbdata) < 0)
             {
@@ -291,6 +297,10 @@ int main(int argc, char* argv[])
             {
                 case SYSCALL_DATA:
                     fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
+                    break;
+
+                case APP_KILLED:
+                    fprintf(stderr, "Replayed application killed by kernel driver.");
                     break;
             }
         }

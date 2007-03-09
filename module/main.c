@@ -581,32 +581,28 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
         return NULL;
     }
 
-    VVDLOG("Entered pre_syscall_callback() - syscall_no: %ld", syscall_no);
-    
     /* Process is being monitored */
     if (process->mode >= MODE_RECORD)
     {
+        VVDLOG("Entered pre_syscall_callback() - syscall_no: %ld", syscall_no);
+
         VVDLOG("Dispatching pre_syscall_callback handler for call %ld", syscall_no);
         process->replay_syscall = 0;
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
-            syscall_args.arg1,
-            syscall_args.arg2,
-            syscall_args.arg3,
-            syscall_args.arg4,
-            syscall_args.arg5,
-            syscall_args.arg6);
+            &syscall_args);
         VVDLOG("Returned from pre_syscall_callback handler for call %ld", syscall_no);
+
+        process->last_syscall_no = (unsigned short) syscall_no;
+
+        if ((process->mode == MODE_REPLAY) && (process->replay_syscall))
+        {
+            VVDLOG("Replaying call return value for call %ld", syscall_no);
+            return &(process->syscall_replay_value);
+        }
+
+        VVDLOG("Leaving pre_syscall_callback()");
     }
 
-    process->last_syscall_no = (unsigned short) syscall_no;
-
-    if ((process->mode == MODE_REPLAY) && (process->replay_syscall))
-    {
-        VVDLOG("Replaying call return value for call %ld", syscall_no);
-        return &(process->syscall_replay_value);
-    }
-
-    VVDLOG("Leaving pre_syscall_callback()");
     return NULL;
 }
 
@@ -614,17 +610,12 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
 {
     process_t *process = processes[current->pid];
 
-    if(process != NULL && process->mode >= MODE_RECORD)
+    if (process != NULL && process->mode >= MODE_RECORD)
     {
         VVDLOG("Dispatching post_syscall_callback handler for call %d", process->last_syscall_no);
         ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(
-            syscall_return_value,
-            syscall_args.arg1,
-            syscall_args.arg2,
-            syscall_args.arg3,
-            syscall_args.arg4,
-            syscall_args.arg5,
-            syscall_args.arg6);
+            &syscall_return_value,
+            &syscall_args);
         VVDLOG("Returned from post_syscall_callback handler for call %d", process->last_syscall_no);
     }
 
