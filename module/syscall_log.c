@@ -35,7 +35,7 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
     monitor_t *monitor = process->monitor;
     struct semaphore *buffer_sem = &(monitor->syscall_sem);
     syscall_log_entry_t* current_data;
-    int ncopycount;
+    unsigned long ncopycount;
 
     /* Lock the buffer semaphore */
     VVDLOG("Attempting to acquire system call buffer semaphore");
@@ -77,13 +77,13 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
     current_data->return_value = ret_val;
     current_data->out_param_len = out_param_len;
     if (out_param_len != 0)
-        if (ncopycount = copy_from_user(&(current_data->out_param), out_param, out_param_len))
+        if ((ncopycount = copy_from_user(&(current_data->out_param), out_param, out_param_len)))
         {
             ERROR("Failed to copy out parameter data for system call %d for process %d (PID: %d)",
                 current_data->call_no,
                 process->child_id,
                 current->pid);
-            ERROR("Out parameter data may be corrupted! %d of %d bytes were not copied", ncopycount, out_param_len);
+            ERROR("Out parameter data may be corrupted! %ld of %ld bytes were not copied", ncopycount, out_param_len);
         }
 
     VDLOG("Wrote record - child_id: %d, call_no: %d, return_value: %ld", 

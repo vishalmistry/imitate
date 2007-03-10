@@ -11,7 +11,7 @@ void pre_getdents64(syscall_args_t *args)
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
     
-    struct linux_dirent64 __user *dirent = args->arg2;
+    struct linux_dirent64 __user *dirent = (struct linux_dirent64 __user *) args->arg2;
 
     if (replaying(process))
     {
@@ -34,7 +34,7 @@ void post_getdents64(long *return_value, syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
 
-    struct linux_dirent64 __user *dirent = args->arg2;
+    struct linux_dirent64 __user *dirent = (struct linux_dirent64 __user *) args->arg2;
 
     if (recording(process))
         write_syscall_log_entry(__NR_getdents64, *return_value, (char*) dirent, *return_value > 0 ? *return_value : 0);

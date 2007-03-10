@@ -12,7 +12,7 @@ void pre_exit_group(syscall_args_t *args)
     monitor_t *monitor = process->monitor;
     syscall_log_entry_t *entry;
 
-    int error_code = args->arg1;
+    int error_code = (int) args->arg1;
 
     if (recording(process))
     {
@@ -31,7 +31,7 @@ void pre_exit_group(syscall_args_t *args)
     else if (replaying(process))
     {
         entry = get_next_syscall_log_entry(__NR_exit_group);
-        /* error_code */ args->arg1 = entry->return_value;
+        /* error_code */ args->arg1 = (int) entry->return_value;
     }
 
     /* Tell monitor that proc has exited */

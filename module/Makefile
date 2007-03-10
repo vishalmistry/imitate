@@ -10,7 +10,8 @@ SYSCALL_INTERCEPTS = syscall_intercepts/open.o \
                      syscall_intercepts/clock_gettime.o \
                      syscall_intercepts/getdents64.o \
                      syscall_intercepts/fstat64.o \
-                     syscall_intercepts/lstat64.o
+                     syscall_intercepts/lstat64.o \
+					 syscall_intercepts/getxattr.o
 
 obj-m += $(MODULE).o
 $(MODULE)-objs += main.o \

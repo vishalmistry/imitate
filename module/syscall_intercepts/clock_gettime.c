@@ -11,7 +11,7 @@ void pre_clock_gettime(syscall_args_t *args)
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
     
-    struct timespec __user *tp = args->arg2;
+    struct timespec __user *tp = (struct timespec __user *) args->arg2;
 
     if (replaying(process))
     {
@@ -34,7 +34,7 @@ void post_clock_gettime(long *return_value, syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
 
-    struct timespec __user *tp = args->arg2;
+    struct timespec __user *tp = (struct timespec __user *) args->arg2;
 
     if (recording(process))
         write_syscall_log_entry(__NR_clock_gettime, *return_value, (char*) tp, *return_value == 0 ? sizeof(struct timespec) : 0);

@@ -11,7 +11,7 @@ void pre_read(syscall_args_t *args)
     process_t *process = processes[current->pid];
     syscall_log_entry_t *entry;
 
-    char __user *buf = args->arg2;
+    char __user *buf = (char __user *) args->arg2;
 
     if (replaying(process))
     {
@@ -34,7 +34,7 @@ void post_read(long *return_value, syscall_args_t* args)
 {
     process_t *process = processes[current->pid];
 
-    char __user *buf = args->arg2;
+    char __user *buf = (char __user *) args->arg2;
 
     if (recording(process))
         write_syscall_log_entry(__NR_read, *return_value, buf, *return_value);
