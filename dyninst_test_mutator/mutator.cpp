@@ -79,20 +79,20 @@ int main(int argc, char *argv[])
 	// Patch main() function to print out no of back branches at the end
 	// Find function
 	BPatch_Vector<BPatch_function*> mainFuncs;
-		appImage->findFunction("main", mainFuncs);
+		appImage->findFunction("exit", mainFuncs);
 	if (mainFuncs.size() == 0)
-		appImage->findFunction("_main", mainFuncs);
+		appImage->findFunction("_exit", mainFuncs);
 	if (mainFuncs.size() == 0)
-		appImage->findFunction("__main", mainFuncs);
+		appImage->findFunction("__exit", mainFuncs);
 
 	if(mainFuncs.size() == 0)
 	{
-		fprintf(stderr, "Could not find main() function");
+		fprintf(stderr, "Could not find exit() function");
 		return 2;
 	}
 
 	// Get main() exit point
-	BPatch_Vector<BPatch_point*> *mainPoints = mainFuncs[0]->findPoint(BPatch_exit);
+	BPatch_Vector<BPatch_point*> *mainPoints = mainFuncs[0]->findPoint(BPatch_entry);
 
 	// Build printf() call:
 	//	printf("Total Total Back-branches: %d\n", counter);
@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
 
 	// Continue mutatee...
 	appProc->continueExecution();
-
+    
 	// Wait for mutatee to finish
 	while (!appProc->isTerminated())
 	{

@@ -10,6 +10,8 @@ int main(int argc, char **argv)
     printf("%d ", i);
   }
 
+  sleep(1);
+
   printf("\nLoop Down: ");
   for (; i > 20; i--)
   {

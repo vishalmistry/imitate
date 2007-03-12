@@ -5,11 +5,17 @@ device="imitate"
 mode="664"
 symfile="/proc/kallsyms"
 
-syscall_awk='$0 ~ /sys_call_table/ { addr = $1; count += 1 } END { if (count == 1) { print "0x" addr } else { print "ERROR" } }'
+syscall_awk='$0 ~ /sys_call_table$/ { addr = $1; count += 1 } END { if (count == 1) { print "0x" addr } else { print "ERROR" } }'
 syscall_addr=$(awk "${syscall_awk}" "${symfile}")
 
-echo "System call table line in '${symfile}':"
+echo "System call table line(s) in '${symfile}':"
 grep sys_call_table "${symfile}"
+
+if [ "${syscall_addr}" = "ERROR" ]; then
+    echo "Could not obtain address from symbols"
+    exit 1
+fi
+
 echo
 echo -n "System call table address is ${syscall_addr}. Is this correct? (yes/no) [no]: "
 
