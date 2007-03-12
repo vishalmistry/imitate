@@ -172,6 +172,7 @@ static int __init kmod_init(void)
     sys_call_table[__NR_fstat64] = syscall_intercept;
     sys_call_table[__NR_lstat64] = syscall_intercept;
     sys_call_table[__NR_getxattr] = syscall_intercept;
+    sys_call_table[__NR_clone] = syscall_intercept;
 
     pre_syscall_callbacks[__NR_open] = pre_open;
     pre_syscall_callbacks[__NR_read] = pre_read;
@@ -183,6 +184,7 @@ static int __init kmod_init(void)
     pre_syscall_callbacks[__NR_fstat64] = pre_fstat64;
     pre_syscall_callbacks[__NR_lstat64] = pre_lstat64;
     pre_syscall_callbacks[__NR_getxattr] = pre_getxattr;
+    pre_syscall_callbacks[__NR_clone] = pre_clone;
     
     post_syscall_callbacks[__NR_open] = post_open;
     post_syscall_callbacks[__NR_read] = post_read;
@@ -193,6 +195,7 @@ static int __init kmod_init(void)
     post_syscall_callbacks[__NR_fstat64] = post_fstat64;
     post_syscall_callbacks[__NR_lstat64] = post_lstat64;
     post_syscall_callbacks[__NR_getxattr] = post_getxattr;
+    post_syscall_callbacks[__NR_clone] = post_clone;
 
 
     /* Set up the character device */

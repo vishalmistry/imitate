@@ -38,4 +38,7 @@ void post_lstat64(long *return_value, syscall_args_t *args);
 void pre_getxattr(syscall_args_t *args);
 void post_getxattr(long *return_value, syscall_args_t *args);
 
+void pre_clone(syscall_args_t *args);
+void post_clone(long *return_value, syscall_args_t *args);
+
 #endif

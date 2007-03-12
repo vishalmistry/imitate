@@ -119,6 +119,7 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
         DLOG("Queuing and blocking process %d (PID %d)", process->child_id, process->pid);
 
         queue_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
+        queue_item->process = process;
         list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
 
         set_current_state(TASK_UNINTERRUPTIBLE);
