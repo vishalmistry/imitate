@@ -39,8 +39,9 @@ void post_mmap2(long *return_value, syscall_args_t *args)
         }
         else if (replaying(process))
         {
+            VDLOG("Replaying mmap2() for process %d (PID: %d)", process->child_id, process->pid);
             entry = get_next_syscall_log_entry(__NR_mmap2);
-            
+
             if ((ncopycount = copy_to_user((void*) (*return_value), &(entry->out_param), len > entry->out_param_len ? entry->out_param_len : len)))
                 DLOG("Replaying mmap(): Failed to copy %ld of %ld bytes back to user space.", ncopycount, len > entry->out_param_len ? entry->out_param_len : len);
             

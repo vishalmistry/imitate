@@ -13,7 +13,9 @@ void pre_close(syscall_args_t *args)
 
     if (replaying(process))
     {
+        VDLOG("Replaying close() for process %d (PID: %d)", process->child_id, process->pid);
         entry = get_next_syscall_log_entry(__NR_close);
+
         replay_value(process, entry);
     }
 

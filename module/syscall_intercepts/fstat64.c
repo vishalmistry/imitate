@@ -15,6 +15,7 @@ void pre_fstat64(syscall_args_t *args)
 
     if (replaying(process))
     {
+        VDLOG("Replaying fstat64() for process %d (PID: %d)", process->child_id, process->pid);
         entry = get_next_syscall_log_entry(__NR_fstat64);
 
         if (entry->return_value == 0)

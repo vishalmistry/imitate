@@ -15,8 +15,9 @@ void pre_read(syscall_args_t *args)
 
     if (replaying(process))
     {
+        VDLOG("Replaying read() for process %d (PID: %d)", process->child_id, process->pid);
         entry = get_next_syscall_log_entry(__NR_read);
-        
+
         if (entry->return_value > 0)
             if (copy_to_user(buf, &(entry->out_param), entry->return_value))
                 goto copy_error;

@@ -85,7 +85,7 @@ struct monitor
     struct semaphore data_available_sem;
     struct semaphore data_write_complete_sem;
     struct process_list syscall_queue;
-	pid_t app_pid;
+    struct process_list app_processes;
     unsigned int child_count;
     callback_t ready_data;
     unsigned int syscall_size;

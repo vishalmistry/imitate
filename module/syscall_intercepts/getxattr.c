@@ -15,6 +15,7 @@ void pre_getxattr(syscall_args_t *args)
 
     if (replaying(process))
     {
+        VDLOG("Replaying getxattr() for process %d (PID: %d)", process->child_id, process->pid);
         entry = get_next_syscall_log_entry(__NR_getxattr);
 
         if (entry->return_value > 0)

@@ -43,7 +43,7 @@ void write_syscall_log_entry(unsigned short call_no, long ret_val, char *out_par
     VVDLOG("Acquired system call buffer semaphore");
     
     VVDLOG("Allocating %d bytes in system call buffer",
-		(unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
+        (unsigned int) (sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len));
 
     while (! (current_data = (syscall_log_entry_t*) sclmalloc(sizeof(*current_data) - sizeof(current_data->out_param) + out_param_len)))
     {
@@ -119,19 +119,27 @@ syscall_log_entry_t *get_next_syscall_log_entry(unsigned short call_no)
         DLOG("Queuing and blocking process %d (PID %d)", process->child_id, process->pid);
 
         queue_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
-        queue_item->process = process;
-        list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
+        if (queue_item)
+        {
+            queue_item->process = process;
+            list_add_tail(&(queue_item->list), &(monitor->syscall_queue.list));
 
-        set_current_state(TASK_UNINTERRUPTIBLE);
-        VVDLOG("Releasing system call buffer semaphore");
-        up(buffer_sem);
-        schedule();
+            set_current_state(TASK_UNINTERRUPTIBLE);
+            VVDLOG("Releasing system call buffer semaphore");
+            up(buffer_sem);
+            schedule();
         
-        DLOG("Blocked process %d (PID: %d) has been woken up.", process->child_id, process->pid);
-        VVDLOG("Attempting to acquire system call buffer semaphore");
-        down(buffer_sem);
-        VVDLOG("Acquired system call buffer semaphore");
-        log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
+            DLOG("Blocked process %d (PID: %d) has been woken up.", process->child_id, process->pid);
+            VVDLOG("Attempting to acquire system call buffer semaphore");
+            down(buffer_sem);
+            VVDLOG("Acquired system call buffer semaphore");
+            log_entry = (syscall_log_entry_t*) (monitor->syscall_data + monitor->syscall_offset);
+        }
+        else
+        {
+            ERROR("Blocking of process %d (PID %d) aborted. Could not allocate queue item memory.", process->child_id, process->pid);
+            ERROR("Replay is no longer accurate!");
+        }
     }
 
     if (log_entry->call_no != call_no)

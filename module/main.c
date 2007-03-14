@@ -305,40 +305,64 @@ static int cdev_open(struct inode *inode, struct file *filp)
 }
 
 static int cdev_release(struct inode *inode, struct file *filp)
-{	
-	process_t *process = processes[current->pid];
-	monitor_t *monitor;
+{    
+    process_t *process = processes[current->pid];
+    monitor_t *monitor;
+    struct list_head *pos, *tmp;
+    struct process_list *item;
+    struct task_struct *task;
 
-	DLOG("Device close");
+    DLOG("Device close");
 
-	if (process != NULL && process->mode == MODE_MONITOR)
-	{
-		monitor = process->monitor;
-		if (monitor->app_pid != 0 && processes[monitor->app_pid] != NULL)
-		{
-			DLOG("Freeing process state for application PID %d", monitor->app_pid);
-			kfree(processes[monitor->app_pid]);
-			processes[monitor->app_pid] = NULL;
-		}
+    if (process != NULL && process->mode == MODE_MONITOR)
+    {
+        monitor = process->monitor;
 
-		DLOG("Freeing system call buffer data for monitor PID %d", current->pid);
-		vfree(monitor->syscall_data);
-		monitor->syscall_data = NULL;
-		
-    	DLOG("Freeing monitor state for PID %d", current->pid);
-		kfree(monitor);
-		process->monitor = NULL;
-		
-		DLOG("Freeing process state for monitor PID %d", current->pid);
-		kfree(process);
-		processes[current->pid] = NULL;
-		
-		return 0;
-	}
-	else
-	{
-	    return -EFAULT;
-	}
+        list_for_each_safe(pos, tmp, &(monitor->app_processes.list))
+        {
+            item = list_entry(pos, struct process_list, list);
+
+            /* Delete from list */
+            list_del(pos);
+
+            if (item->process != NULL)
+            {
+                /* Mark processes[] entry as NULL */
+                processes[item->process->pid] = NULL;
+
+                /* Wake up process to avoid zombies and such */
+                task = find_task_by_pid(item->process->pid);
+                if (task) wake_up_process(task);
+
+                /* Free process */
+                DLOG("Freeing process state for application PID %d", item->process->pid);
+                kfree(item->process);
+                item->process = NULL;
+            }
+
+            /* Free list item struct */
+            kfree(item);
+            item = NULL;
+        }
+
+        DLOG("Freeing system call buffer data for monitor PID %d", current->pid);
+        vfree(monitor->syscall_data);
+        monitor->syscall_data = NULL;
+        
+        DLOG("Freeing monitor state for PID %d", current->pid);
+        kfree(monitor);
+        process->monitor = NULL;
+        
+        DLOG("Freeing process state for monitor PID %d", current->pid);
+        kfree(process);
+        processes[current->pid] = NULL;
+        
+        return 0;
+    }
+    else
+    {
+        return -EFAULT;
+    }
 }
 
 static ssize_t cdev_read(struct file *filp, char __user *buffer, size_t length, loff_t *offset)
@@ -368,6 +392,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
     int result = 0;
     process_t *process;
     monitor_t *monitor;
+    struct process_list* pl_item;
     prep_replay_t prepdata;
     
     /* Verify cmd is valid */
@@ -385,33 +410,32 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d assigned as a monitor. Waiting for application.", current->pid);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
-			if (! process)
-			{
-				result = -ENOMEM;
-				goto allocproc_fail; /* break; */
-			}
-			
+            if (! process)
+            {
+                result = -ENOMEM;
+                goto allocproc_fail; /* break; */
+            }
+            
             monitor = (monitor_t*) kmalloc(sizeof(monitor_t), GFP_KERNEL);
-			if (! monitor)
-			{
-				result = -ENOMEM;
-				goto allocmon_fail;
-			}
+            if (! monitor)
+            {
+                result = -ENOMEM;
+                goto allocmon_fail;
+            }
 
             process->mode = MODE_MONITOR;
             process->pid  = current->pid;
             process->monitor = monitor;
 
             monitor->syscall_data = (char*) vmalloc(SYSCALL_BUFFER_SIZE);
-			if (! (monitor->syscall_data))
-			{
-				result = -ENOMEM;
-				goto allocsyscallbuf_fail;
-			}
+            if (! (monitor->syscall_data))
+            {
+                result = -ENOMEM;
+                goto allocsyscallbuf_fail;
+            }
 
             /* TODO: Allocate schedule data */
 
-			monitor->app_pid = 0;
             monitor->child_count = 0;
             monitor->syscall_size = 0;
             monitor->sched_size = 0;
@@ -420,6 +444,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             monitor->ready_data.type = NO_DATA;
 
             INIT_LIST_HEAD(&(monitor->syscall_queue.list));
+            INIT_LIST_HEAD(&(monitor->app_processes.list));
 
             sema_init(&(monitor->syscall_sem), 1);
             sema_init(&(monitor->data_available_sem), 0);
@@ -432,17 +457,26 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d being recorded by monitor process %d", current->pid, (pid_t) arg);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
-			if (! process)
-			{
-				result = -ENOMEM;
-				goto allocproc_fail; /* break; */
-			}
-			
+            if (! process)
+            {
+                result = -ENOMEM;
+                goto allocproc_fail; /* break; */
+            }
+            
             process->pid = current->pid;
             process->mode = MODE_RECORD;
             process->monitor = processes[(pid_t) arg]->monitor;
             process->child_id = ++(process->monitor->child_count);
-            process->monitor->app_pid = current->pid;
+
+            pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
+            if (! pl_item)
+            {
+                result = -ENOMEM;
+                goto alloc_plitem_fail;
+            }
+            pl_item->process = process;
+            list_add_tail(&(pl_item->list), &(process->monitor->app_processes.list));
+
             processes[current->pid] = process;
             break;
 
@@ -450,17 +484,26 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             DLOG("Process %d being replayed by monitor %d", current->pid, (pid_t) arg);
 
             process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
-			if (! process)
-			{
-				result = -ENOMEM;
-				goto allocproc_fail; /* break; */
-			}
+            if (! process)
+            {
+                result = -ENOMEM;
+                goto allocproc_fail; /* break; */
+            }
 
             process->pid = current->pid;
             process->mode = MODE_REPLAY;
             process->monitor = processes[(pid_t) arg]->monitor;
             process->child_id = ++(process->monitor->child_count);
-            process->monitor->app_pid = current->pid;
+
+            pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
+            if (! pl_item)
+            {
+                result = -ENOMEM;
+                goto alloc_plitem_fail;
+            }
+            pl_item->process = process;
+            list_add_tail(&(pl_item->list), &(process->monitor->app_processes.list));
+
             processes[current->pid] = process;
             break;
 
@@ -537,14 +580,18 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             break;
     }
 
-	allocproc_fail:
+    allocproc_fail:
     return result;
-
-	allocsyscallbuf_fail:
-		kfree(monitor);
-	allocmon_fail:
-		kfree(process);
-	return result;	
+    
+    alloc_plitem_fail:
+        kfree(process);
+    return result;
+    
+    allocsyscallbuf_fail:
+        kfree(monitor);
+    allocmon_fail:
+        kfree(process);
+    return result;    
 }
 
 /*

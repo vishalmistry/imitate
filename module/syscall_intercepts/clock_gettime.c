@@ -15,6 +15,7 @@ void pre_clock_gettime(syscall_args_t *args)
 
     if (replaying(process))
     {
+        VDLOG("Replaying clock_gettime() for process %d (PID: %d)", process->child_id, process->pid);
         entry = get_next_syscall_log_entry(__NR_clock_gettime);
 
         if (entry->return_value == 0)
