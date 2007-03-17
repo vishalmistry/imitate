@@ -30,6 +30,11 @@ MODULE_LICENSE("GPL");
  */
 extern void syscall_intercept(void);
 
+/* 
+ * Context switch hook function
+ */
+extern void set_context_switch_hook(void (*csh)(struct task_struct*, struct task_struct*));
+
 /*
  * System call table and the backup
  */
@@ -98,6 +103,11 @@ MODULE_PARM_DESC(sys_call_table_addr, "Address of system call table. Use /proc/k
 asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_return_addr, syscall_args_t syscall_args);
 asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsigned long syscall_return_addr, syscall_args_t syscall_args);
 
+
+/*
+ * Context-switch hook prototype
+ */
+void context_switch_hook(struct task_struct *prev, struct task_struct *next);
 
 asmlinkage void empty_callback(void)
 {
@@ -197,6 +207,9 @@ static int __init kmod_init(void)
     post_syscall_callbacks[__NR_getxattr] = post_getxattr;
     post_syscall_callbacks[__NR_clone] = post_clone;
 
+    /* Set up context switch hook */
+    DLOG("Installing context switch hook");
+    set_context_switch_hook(context_switch_hook);
 
     /* Set up the character device */
     DLOG("Registering character device");
@@ -675,4 +688,11 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
     return syscall_return_addresses[current->pid];
 }
 
+void context_switch_hook(struct task_struct *prev, struct task_struct *next)
+{
+    process_t *process = processes[current->pid];
 
+    if ((process->mode == MODE_RECORD) && (processes[prev->pid] != NULL))
+    {
+    }
+}

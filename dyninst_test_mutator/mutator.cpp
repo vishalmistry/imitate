@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <pthread.h>
 #include "BPatch.h"
 #include "BPatch_function.h"
 #include "BPatch_edge.h"
@@ -22,6 +23,9 @@ int main(int argc, char *argv[])
 
 	// Create process
 	BPatch_process *appProc = bpatch.processCreate(argv[2], (const char**) &(argv[3]));
+
+    // Load pthread into the process...
+    appProc->loadLibrary("libpthread.so.0");
 	
 	// Get the process image	
 	BPatch_image *appImage = appProc->getImage();
@@ -32,9 +36,60 @@ int main(int argc, char *argv[])
 	// Allocate counter
 	BPatch_variableExpr *intCounter = appProc->malloc(*appImage->findType("int"));
 
+    printf("intCounter address: %x\n PID: %d\n", intCounter->getBaseAddr(), appProc->getPid());
+    fflush(stdout);
+
+    // Find the mutex lock/unlock functions
+    BPatch_Vector<BPatch_function*> mutexLockFunctions;
+		appImage->findFunction("pthread_mutex_lock", mutexLockFunctions);
+	if (mutexLockFunctions.size() == 0)
+		appImage->findFunction("_pthread_mutex_lock", mutexLockFunctions);
+	if (mutexLockFunctions.size() == 0)
+		appImage->findFunction("__pthread_mutex_lock", mutexLockFunctions);
+
+    if(mutexLockFunctions.size() == 0)
+	{
+		fprintf(stderr, "Could not find pthread_mutex_lock() function");
+		return 2;
+	}
+
+    BPatch_Vector<BPatch_function*> mutexUnlockFunctions;
+		appImage->findFunction("pthread_mutex_unlock", mutexUnlockFunctions);
+	if (mutexUnlockFunctions.size() == 0)
+		appImage->findFunction("_pthread_mutex_unlock", mutexUnlockFunctions);
+	if (mutexUnlockFunctions.size() == 0)
+		appImage->findFunction("__pthread_mutex_unlock", mutexUnlockFunctions);
+
+    if(mutexUnlockFunctions.size() == 0)
+	{
+		fprintf(stderr, "Could not find pthread_mutex_unlock() function");
+		return 2;
+	}
+
+    // Allocate a mutex
+    pthread_mutex_t mutexValue = PTHREAD_MUTEX_INITIALIZER;
+    BPatch_variableExpr *mutex = appProc->malloc(sizeof(pthread_mutex_t));
+    mutex->writeValue(&mutexValue, sizeof(pthread_mutex_t), false);
+
+    // Build mutex lock call
+	BPatch_Vector<BPatch_snippet*> mutexArgs;
+    BPatch_constExpr mutexAddress(mutex->getBaseAddr());
+
+    mutexArgs.push_back(&mutexAddress);
+
+    BPatch_funcCallExpr mutexLockCall(*mutexLockFunctions[0], mutexArgs);
+    BPatch_funcCallExpr mutexUnlockCall(*mutexUnlockFunctions[0], mutexArgs);
+
 	// Create 'increment counter' snippet
-	BPatch_arithExpr addOne(BPatch_assign, *intCounter,
+	BPatch_arithExpr addOneToCounter(BPatch_assign, *intCounter,
 		BPatch_arithExpr(BPatch_plus, *intCounter, BPatch_constExpr(1)));
+
+    BPatch_Vector<BPatch_snippet*> snippet;
+    snippet.push_back(&mutexLockCall);
+    snippet.push_back(&addOneToCounter);
+    snippet.push_back(&mutexUnlockCall);
+
+    BPatch_sequence addOneAtomic(snippet);
 
 	char *name = (char*) malloc(sizeof(char)*200);
 	char *modname = (char*) malloc(sizeof(char)*200);
@@ -43,6 +98,8 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "%s %d: Out of memory!", __FILE__, __LINE__);
 		return 1;
 	}
+
+	appProc->beginInsertionSet();
 
 	// Iterate through the procedures
 	for (int i = 0; i < functions->size(); i++)
@@ -63,7 +120,7 @@ int main(int argc, char *argv[])
 		// Patch the loop back-edges
 		for(int j = 0; j < loops->size(); j++)
 		{
-			appProc->insertSnippet(addOne, *((*loops)[j]->getBackEdge()->getPoint()));
+			appProc->insertSnippet(addOneAtomic, *((*loops)[j]->getBackEdge()->getPoint()));
 			printf(".", (int) (*loops)[j]->getBackEdge()->getPoint()->getAddress());
 		}
 		printf("\n");
@@ -71,7 +128,9 @@ int main(int argc, char *argv[])
 		// Free the loops found
 		delete(loops);
 	}
-	
+
+	appProc->finalizeInsertionSet(false);	
+
 	// Clear up memory used to store the name
 	free(name);
 	free(modname);
@@ -91,7 +150,7 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 
-	// Get main() exit point
+	// Get exit() exit point
 	BPatch_Vector<BPatch_point*> *mainPoints = mainFuncs[0]->findPoint(BPatch_entry);
 
 	// Build printf() call:
@@ -126,7 +185,7 @@ int main(int argc, char *argv[])
 
 	// Continue mutatee...
 	appProc->continueExecution();
-    
+
 	// Wait for mutatee to finish
 	while (!appProc->isTerminated())
 	{
