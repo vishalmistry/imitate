@@ -30,6 +30,12 @@
 #define MODE_REPLAY     3
 
 /*
+ * mmap() selection
+ */
+#define MAP_SYSCALL_BUFFER  0
+#define MAP_SCHED_BUFFER    1
+
+/*
  * Debug message macros
  */
 #if DEBUG > 0
@@ -86,6 +92,7 @@ struct monitor
     struct semaphore data_write_complete_sem;
     struct process_list syscall_queue;
     struct process_list app_processes;
+    char   mmap_select;
     unsigned int child_count;
     callback_t ready_data;
     unsigned int syscall_size;
@@ -105,6 +112,7 @@ struct process
     char mode;
     monitor_t *monitor;
     unsigned int child_id;
+    unsigned long *sched_counter;
 
     /*
      * Storage for data between pre-/post- system call

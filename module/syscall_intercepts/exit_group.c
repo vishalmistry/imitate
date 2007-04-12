@@ -11,8 +11,8 @@ void pre_exit_group(syscall_args_t *args)
     process_t *process = processes[current->pid];
     monitor_t *monitor = process->monitor;
     syscall_log_entry_t *entry;
-    struct list_head *pos, *tmp;
-    struct process_list *item;
+/*    struct list_head *pos, *tmp;
+    struct process_list *item; */
 
     int error_code = (int) args->arg1;
 
@@ -27,6 +27,12 @@ void pre_exit_group(syscall_args_t *args)
             down(&(monitor->data_write_complete_sem));
             monitor->ready_data.type = SYSCALL_DATA;
             monitor->ready_data.size = monitor->syscall_offset;
+            up(&(monitor->data_available_sem));
+
+            /* Force monitor to write schedule data */
+            down(&(monitor->data_write_complete_sem));
+            monitor->ready_data.type = SCHED_DATA;
+            monitor->ready_data.size = monitor->sched_offset;
             up(&(monitor->data_available_sem));
         }
     }

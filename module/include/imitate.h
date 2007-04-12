@@ -7,14 +7,14 @@
 #define IMITATE_IOC_MAGIC 0xE0
 
 /* Maximum command number */
-#define IMITATE_IOC_MAXNR 5
+#define IMITATE_IOC_MAXNR 6
 
 /*
  * ioctl() commands
  */
 
 /* Notify driver to reset data structures for calling monitor
-   and associated child */
+   and associated child - not implemented */
 #define IMITATE_RESET _IO(IMITATE_IOC_MAGIC, 0)
 /* Notify driver that the caller is the application monitor */
 #define IMITATE_MONITOR _IO(IMITATE_IOC_MAGIC, 1)
@@ -29,6 +29,8 @@
 #define IMITATE_MONITOR_CB _IOR(IMITATE_IOC_MAGIC, 4, callback_t)
 /* Notify driver of initial buffer sizes during replay */
 #define IMITATE_PREP_REPLAY _IOR(IMITATE_IOC_MAGIC, 5, prep_replay_t)
+/* Notify driver of the schedule counter address */
+#define IMITATE_NOTIFY_SCHED_COUNTER _IOR(IMITATE_IOC_MAGIC, 6, unsigned long*)
 
 #define NO_DATA      0x0
 #define SYSCALL_DATA 0x1
@@ -41,6 +43,11 @@
  */
 #define SYSCALL_BUFFER_SIZE 10485760
 //#define SYSCALL_BUFFER_SIZE 16384
+
+/*
+ * Buffer size of schedule storage 128K
+ */
+#define SCHED_BUFFER_SIZE 131072
 
 typedef struct
 {
@@ -65,5 +72,15 @@ typedef struct
     unsigned long out_param_len;
     char out_param;
 } __attribute__((packed)) syscall_log_entry_t;
+
+/*
+ * Schedule log entry
+ */
+typedef struct
+{
+    unsigned int child_id;
+    unsigned long counter;
+    unsigned long ip;
+} __attribute__((packed)) sched_log_entry_t;
 
 #endif

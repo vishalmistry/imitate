@@ -72,9 +72,9 @@ int main(int argc, char* argv[], char* envp[])
 {
     int i, dev;
     pid_t app_pid;
-    char *syscall_log, *fpath;
+    char *syscall_log, *sched_log, *fpath;
     syscall_log_entry_t *log_entry;
-    FILE* syscall_log_file, sched_log_file;
+    FILE* syscall_log_file, *sched_log_file;
     callback_t cbdata =
     {
         .type = NO_DATA,
@@ -117,12 +117,22 @@ int main(int argc, char* argv[], char* envp[])
         goto error_after_dev;
     }
 
+    if ((sched_log = (char*) mmap(NULL, SCHED_BUFFER_SIZE, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
+    {
+        perror("Memory mapping schedule log");
+        goto error_after_dev;
+    }
+
     app_pid = fork();
 
     if (app_pid > 0) /* Parent */
     {
         fpath = log_file_path(argv[1], "syscall");
         syscall_log_file = fopen(fpath, "wb");
+        free(fpath);
+
+        fpath = log_file_path(argv[1], "sched");
+        sched_log_file = fopen(fpath, "wb");
         free(fpath);
 
         while (cbdata.type != APP_EXIT && cbdata.type != APP_KILLED)
@@ -137,6 +147,10 @@ int main(int argc, char* argv[], char* envp[])
             {
                 case SYSCALL_DATA:
                     fwrite(syscall_log, cbdata.size, 1, syscall_log_file);
+                    break;
+
+                case SCHED_DATA:
+                    fwrite(sched_log, cbdata.size, 1, sched_log_file);
                     break;
 
                 case APP_KILLED:
@@ -166,6 +180,7 @@ int main(int argc, char* argv[], char* envp[])
     }
 
     fclose(syscall_log_file);
+    fclose(sched_log_file);
 
     waitpid(app_pid, &i, NULL);
 

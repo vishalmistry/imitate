@@ -31,6 +31,7 @@ void post_clone(long *return_value, syscall_args_t *args)
     new_proc->pid = *return_value;
     new_proc->mode = process->mode;
     new_proc->monitor = process->monitor;
+    new_proc->sched_counter = process->sched_counter;
     new_proc->child_id = ++(process->monitor->child_count);
 
     pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);

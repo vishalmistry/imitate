@@ -13,8 +13,9 @@
 #include <linux/cdev.h>
 #include <linux/errno.h>
 #include <linux/vmalloc.h>
-#include <linux/mm.h>
 #include <asm/uaccess.h>
+#include <linux/mm.h>
+#include <linux/io.h>
 #include "syscall_intercepts/intercepts.h"
 #include "main.h"
 
@@ -29,6 +30,11 @@ MODULE_LICENSE("GPL");
  * System call intercept from architecture dependent function
  */
 extern void syscall_intercept(void);
+
+/*
+ * Architecture dependent instruction pointer
+ */
+extern long get_user_mode_instruction_pointer(struct task_struct *task);
 
 /* 
  * Context switch hook function
@@ -207,10 +213,6 @@ static int __init kmod_init(void)
     post_syscall_callbacks[__NR_getxattr] = post_getxattr;
     post_syscall_callbacks[__NR_clone] = post_clone;
 
-    /* Set up context switch hook */
-    DLOG("Installing context switch hook");
-    set_context_switch_hook(context_switch_hook);
-
     /* Set up the character device */
     DLOG("Registering character device");
     cdev_init(&cdev, &fops);
@@ -229,6 +231,10 @@ static int __init kmod_init(void)
     {
         processes[i] = NULL;
     }
+
+    /* Set up context switch hook */
+    DLOG("Installing context switch hook");
+    set_context_switch_hook(context_switch_hook);
 
     LOG("Loaded " MODULE_NAME " kernel module");
 
@@ -263,6 +269,8 @@ static void __exit kmod_exit(void)
     dev_t dev = MKDEV(dev_major, DEVICE_MINOR);
 
     DLOG("Unloading " MODULE_NAME " module");
+
+    set_context_switch_hook(NULL);
 
     /* Clean up memory (just in case anything is left over) */
     for (i = 0; i < PID_MAX_LIMIT; i++)
@@ -362,6 +370,10 @@ static int cdev_release(struct inode *inode, struct file *filp)
         vfree(monitor->syscall_data);
         monitor->syscall_data = NULL;
         
+        DLOG("Freeing schedule buffer data for monitor PID %d", current->pid);
+        kfree(monitor->sched_data);
+        monitor->sched_data = NULL;
+
         DLOG("Freeing monitor state for PID %d", current->pid);
         kfree(monitor);
         process->monitor = NULL;
@@ -387,17 +399,41 @@ static ssize_t cdev_read(struct file *filp, char __user *buffer, size_t length, 
 static int cdev_mmap(struct file *filp, struct vm_area_struct *vma)
 {
     process_t *process = processes[current->pid];
+    monitor_t *monitor = process->monitor;
+    struct page *pstart, *pend, *page;
+
     if (process != NULL && process->mode == MODE_MONITOR)
     {
-        DLOG("Memory mapping system call data buffer to user space");
-        vma->vm_flags |= VM_RESERVED;
-        vma->vm_ops = &vm_syscall_ops;
-        return 0;
+        if (monitor->mmap_select == MAP_SYSCALL_BUFFER)
+        {
+            DLOG("Memory mapping system call data buffer to user space");
+            vma->vm_flags |= VM_RESERVED;
+            vma->vm_ops = &vm_syscall_ops;
+
+            monitor->mmap_select++;
+            return 0;
+        }
+        else if (monitor->mmap_select == MAP_SCHED_BUFFER)
+        {
+            DLOG("Memory mapping schedule data buffer into user space");
+            vma->vm_flags |= VM_RESERVED;
+            
+            pstart = virt_to_page(monitor->sched_data);
+            pend = virt_to_page(monitor->sched_data + SCHED_BUFFER_SIZE);
+            
+            /* Reserve pages so they can be mapped by remap_pfn_range */
+            for (page = pstart; page < pend; page++)
+                SetPageReserved(page);
+
+            if (remap_pfn_range(vma, vma->vm_start, ((unsigned long) virt_to_phys(monitor->sched_data)) >> PAGE_SHIFT, SCHED_BUFFER_SIZE, PAGE_SHARED))
+                return -EAGAIN;
+
+            monitor->mmap_select++;
+            return 0;
+        }
     }
-    else
-    {
-        return -ENODEV;
-    }
+
+    return -ENODEV;
 }
 
 static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
@@ -447,8 +483,14 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 goto allocsyscallbuf_fail;
             }
 
-            /* TODO: Allocate schedule data */
+            monitor->sched_data = (char*) kmalloc(SCHED_BUFFER_SIZE, GFP_KERNEL);
+            if (! (monitor->sched_data))
+            {
+                result = -ENOMEM;
+                goto allocschedbuf_fail;
+            }
 
+            monitor->mmap_select = MAP_SYSCALL_BUFFER;
             monitor->child_count = 0;
             monitor->syscall_size = 0;
             monitor->sched_size = 0;
@@ -479,6 +521,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->pid = current->pid;
             process->mode = MODE_RECORD;
             process->monitor = processes[(pid_t) arg]->monitor;
+            process->sched_counter = NULL;
             process->child_id = ++(process->monitor->child_count);
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
@@ -506,6 +549,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->pid = current->pid;
             process->mode = MODE_REPLAY;
             process->monitor = processes[(pid_t) arg]->monitor;
+            process->sched_counter = NULL;
             process->child_id = ++(process->monitor->child_count);
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
@@ -572,7 +616,6 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 return -EINTR;
             }
 
-
             if (copy_to_user((void __user*) arg, &(process->monitor->ready_data), sizeof(process->monitor->ready_data)))
             {
                 ERROR("CRITICAL: Failed to copy callback data to monitor with PID %d. Cannot recover!", current->pid);
@@ -591,6 +634,11 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->monitor->syscall_size = prepdata.syscall_size;
             process->monitor->sched_size = prepdata.sched_size;
             break;
+
+        case IMITATE_NOTIFY_SCHED_COUNTER:
+            process = processes[current->pid];
+            process->sched_counter = (unsigned long*) arg;
+            break;
     }
 
     allocproc_fail:
@@ -600,6 +648,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
         kfree(process);
     return result;
     
+    allocschedbuf_fail:
+        vfree(monitor->syscall_data);
     allocsyscallbuf_fail:
         kfree(monitor);
     allocmon_fail:
@@ -688,11 +738,50 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
     return syscall_return_addresses[current->pid];
 }
 
+void* slmalloc(unsigned int size)
+{
+    monitor_t *monitor = processes[current->pid]->monitor;
+    void* alloced_mem = (void*) (monitor->sched_data + monitor->sched_offset);
+
+    if (size > (SCHED_BUFFER_SIZE - monitor->sched_offset))
+    {
+        DLOG("Schedule log memory request: %d. Free: %d of %d bytes.", size,
+            (SCHED_BUFFER_SIZE - monitor->sched_offset),
+            SCHED_BUFFER_SIZE);
+        DLOG("Out of schedule log memory!");
+        return NULL;
+    }
+
+    /* Allocate */
+    VVDLOG("Allocated %d bytes in schedule buffer at offset %d", size, monitor->sched_offset);
+    monitor->sched_offset += size;
+    return alloced_mem;
+}
+
 void context_switch_hook(struct task_struct *prev, struct task_struct *next)
 {
-    process_t *process = processes[current->pid];
-
-    if ((process->mode == MODE_RECORD) && (processes[prev->pid] != NULL))
+    process_t *process = processes[prev->pid];
+    sched_log_entry_t *entry;
+    unsigned long counter_val;
+    
+    /* Process is being recorded and is being swapped out */
+    if ((process != NULL) && (process->mode == MODE_RECORD))
     {
+        entry = slmalloc(sizeof(sched_log_entry_t));
+        if (! entry)
+        {
+            /* Out of schedule memory */
+            return;
+        }
+
+        entry->child_id = process->child_id;
+        if (process->sched_counter)
+        {
+            if (get_user(counter_val, (unsigned long __user*) process->sched_counter))
+            {
+                /* Copy failed */
+            }
+        }
+        entry->ip = get_user_mode_instruction_pointer(prev);
     }
 }

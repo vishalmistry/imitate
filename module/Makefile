@@ -18,9 +18,12 @@ obj-m += $(MODULE).o
 $(MODULE)-objs += main.o \
                   syscall_log.o \
                   arch/$(ARCH)/syscall_intercept.o \
+                  arch/$(ARCH)/usermode_ip.o \
                   $(SYSCALL_INTERCEPTS)
 
-all:
+all: $(MODULE).ko
+
+$(MODULE).ko:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 	rm -f *~ *.o *.mod.c *.mod.o .*.cmd arch/i386/.*.cmd syscall_intercepts/.*.cmd
 	rm -rf .tmp_versions
