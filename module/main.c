@@ -332,6 +332,7 @@ static int cdev_release(struct inode *inode, struct file *filp)
     struct list_head *pos, *tmp;
     struct process_list *item;
     struct task_struct *task;
+    struct page *page, *pstart, *pend;
 
     DLOG("Device close");
 
@@ -370,6 +371,14 @@ static int cdev_release(struct inode *inode, struct file *filp)
         vfree(monitor->syscall_data);
         monitor->syscall_data = NULL;
         
+        DLOG("Calling ClearPageReserved for schedule buffer data for monitor PID %d", current->pid);
+        pstart = virt_to_page(monitor->sched_data);
+        pend = virt_to_page(monitor->sched_data + SCHED_BUFFER_SIZE);
+
+        /* Unreserve pages so they can be freed */
+        for (page = pstart; page < pend; page++)
+            ClearPageReserved(page);
+
         DLOG("Freeing schedule buffer data for monitor PID %d", current->pid);
         kfree(monitor->sched_data);
         monitor->sched_data = NULL;
@@ -425,7 +434,11 @@ static int cdev_mmap(struct file *filp, struct vm_area_struct *vma)
             for (page = pstart; page < pend; page++)
                 SetPageReserved(page);
 
-            if (remap_pfn_range(vma, vma->vm_start, ((unsigned long) virt_to_phys(monitor->sched_data)) >> PAGE_SHIFT, SCHED_BUFFER_SIZE, PAGE_SHARED))
+            if (remap_pfn_range(vma,
+                    vma->vm_start,
+                    virt_to_phys((void*)((unsigned long) monitor->sched_data)) >> PAGE_SHIFT,
+                    SCHED_BUFFER_SIZE,
+                    PAGE_SHARED))
                 return -EAGAIN;
 
             monitor->mmap_select++;
@@ -775,6 +788,7 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
         }
 
         entry->child_id = process->child_id;
+        entry->counter = 0;
         if (process->sched_counter)
         {
             if (get_user(counter_val, (unsigned long __user*) process->sched_counter))
