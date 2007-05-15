@@ -1,0 +1,21 @@
+#!/bin/sh
+
+ARGS="-hda /vol/OSImages/ubuntu-edgy.img -boot c -net tap,vlan=0,script=qemu-ifup -net nic,vlan=0 -m 384 -localtime"
+
+# Load KVM module
+echo "Loading kvm-intel...."
+modprobe kvm-intel
+
+echo "Setting up second network interface..."
+ifconfig ra0:1 192.168.0.200 netmask 255.255.255.0 up
+
+echo "Running QEMU with args:\n$ARGS $@..."
+/usr/bin/kvm $ARGS $@
+
+echo "Taking down second network interface..."
+ifconfig ra0:1 down
+
+echo "Disabling NAT..."
+echo 0 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat --flush
+modprobe -r iptable_nat

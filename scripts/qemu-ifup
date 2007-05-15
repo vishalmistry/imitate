@@ -1,0 +1,12 @@
+#!/bin/sh
+
+echo "Running qemu-ifup..."
+
+echo "Setting up $1 IP addess..."
+ifconfig $1 10.0.0.1 netmask 255.255.255.0 up
+
+echo "Setting up NAT..."
+modprobe iptable_nat
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat -A PREROUTING -i ra0 -d 192.168.0.200 -j DNAT --to 10.0.0.2
+iptables -t nat -A POSTROUTING -o ra0 -s 10.0.0.2 -j SNAT --to 192.168.0.200

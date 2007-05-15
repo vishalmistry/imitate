@@ -5,33 +5,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <util/include/log.h>
 #include <imitate.h>
 
-#define FILE_SEPARATOR '/'
 #define PROG_ARGS 2
-
-char* log_file_path(char* dir, char* fname)
-{
-    int dir_len = strlen(dir), max_len;
-    char* path;
-    
-    /* Remove file separtor from end of dir */
-    while (dir[dir_len-1] == FILE_SEPARATOR)
-    {
-        dir[dir_len-1] = '\0';
-        dir_len--;
-    }
-    
-    /* Build path */
-    path = (char*) malloc(dir_len + strlen(fname) + 2);
-    if (! path)
-    {
-        perror("Allocating file path string");
-    }
-    sprintf(path, "%s%c%s", dir, FILE_SEPARATOR, fname);
-    
-    return path;
-}
 
 void store_arguments(char* log_dir, int argc, char* argv[], char* envp[])
 {
