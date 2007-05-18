@@ -32,11 +32,12 @@
 /* Notify driver of the schedule counter address */
 #define IMITATE_NOTIFY_SCHED_COUNTER _IOR(IMITATE_IOC_MAGIC, 6, unsigned long*)
 
-#define NO_DATA      0x0
-#define SYSCALL_DATA 0x1
-#define SCHED_DATA   0x2
-#define APP_EXIT     0x4
-#define APP_KILLED   0x8
+#define NO_DATA         0x0
+#define SYSCALL_DATA    0x1
+#define SCHED_DATA      0x2
+#define APP_EXIT        0x4
+#define APP_KILLED      0x8
+#define COUNTER_PATCH   0x10
 
 /*
  * Buffer size of syscall storage (10 MB)

@@ -41,4 +41,7 @@ void post_getxattr(long *return_value, syscall_args_t *args);
 void pre_clone(syscall_args_t *args);
 void post_clone(long *return_value, syscall_args_t *args);
 
+void pre_execve(syscall_args_t *args);
+void post_execve(long *return_value, syscall_args_t *args);
+
 #endif

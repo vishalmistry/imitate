@@ -238,6 +238,10 @@ int main(int argc, char* argv[])
                     fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
                     break;
 
+                case COUNTER_PATCH:
+                    fprintf(stderr, "Patch...\n");
+                    break;
+
                 case APP_KILLED:
                     fprintf(stderr, "Replayed application killed by kernel driver.\n");
                     break;

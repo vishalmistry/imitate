@@ -29,6 +29,7 @@
 #define replay_value(P,X) seek_to_next_syscall_entry(); \
                           (P)->replay_syscall = 1; \
                           (P)->syscall_replay_value = (X)->return_value
+#define cancel_replay(P)  seek_to_next_syscall_entry()
 
 /*
  * Copy to user-space standard error
