@@ -130,10 +130,6 @@ int main(int argc, char* argv[], char* envp[])
                     fwrite(sched_log, cbdata.size, 1, sched_log_file);
                     break;
 
-                case COUNTER_PATCH:
-                    fprintf(stderr, "Patch...\n");
-                    break;
-
                 case APP_KILLED:
                     fprintf(stderr, "Recorded application killed by kernel driver.\n");
                     break;

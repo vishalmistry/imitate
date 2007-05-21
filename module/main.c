@@ -398,6 +398,7 @@ static int cdev_release(struct inode *inode, struct file *filp)
     }
     else
     {
+        DLOG("Got release from non-monitor process %d, mode = %d", current->pid, (process == NULL) ? -1 : process->mode);
         return -EFAULT;
     }
 }

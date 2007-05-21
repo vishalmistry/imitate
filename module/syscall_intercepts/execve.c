@@ -33,13 +33,16 @@ void pre_execve(syscall_args_t *args)
 void post_execve(long *return_value, syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
+#if 0
     monitor_t *monitor = process->monitor;
-    
+#endif
+
     VVDLOG("execve() returned");
 
+#if 0
     if (*return_value >= 0)
     {
-        VDLOG("Notifying user space of COUNTER_PATCH");
+         VDLOG("Notifying user space of COUNTER_PATCH"); 
 
         /* Patch process image */
         down(&(monitor->data_write_complete_sem));
@@ -47,11 +50,14 @@ void post_execve(long *return_value, syscall_args_t *args)
         monitor->ready_data.size = 0;
         up(&(monitor->data_available_sem));
 
-        /* Wait for write to complete before trying again */
+        kill_proc(current->pid, SIGSTOP, 1);
+
+        /* Wait for patch to complete */
         down(&(monitor->data_write_complete_sem));
         monitor->ready_data.type = NO_DATA;
         up(&(monitor->data_available_sem));
     }
+#endif
 
     if (recording(process))
     {
