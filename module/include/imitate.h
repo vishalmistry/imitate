@@ -29,8 +29,6 @@
 #define IMITATE_MONITOR_CB _IOR(IMITATE_IOC_MAGIC, 4, callback_t)
 /* Notify driver of initial buffer sizes during replay */
 #define IMITATE_PREP_REPLAY _IOR(IMITATE_IOC_MAGIC, 5, prep_replay_t)
-/* Notify driver of the schedule counter address */
-#define IMITATE_NOTIFY_SCHED_COUNTER _IOR(IMITATE_IOC_MAGIC, 6, unsigned long*)
 
 #define NO_DATA         0x0
 #define SYSCALL_DATA    0x1
@@ -48,7 +46,12 @@
 /*
  * Buffer size of schedule storage 128K
  */
-#define SCHED_BUFFER_SIZE 131072
+#define SCHED_BUFFER_SIZE   131072
+
+/*
+ * Counter type
+ */
+#define sched_counter_t     unsigned long
 
 typedef struct
 {

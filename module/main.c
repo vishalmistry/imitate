@@ -359,6 +359,11 @@ static int cdev_release(struct inode *inode, struct file *filp)
                 task = find_task_by_pid(item->process->pid);
                 if (task) wake_up_process(task);
 
+                /* Clear reserved bit on schedule counter */
+                DLOG("Clearing reserved bit for software counter. Final Value: %ld", 
+                    item->process->sched_counter);
+                ClearPageReserved(virt_to_page(&(item->process->sched_counter)));
+
                 /* Free process */
                 DLOG("Freeing process state for application PID %d", item->process->pid);
                 kfree(item->process);
@@ -449,6 +454,23 @@ static int cdev_mmap(struct file *filp, struct vm_area_struct *vma)
             return 0;
         }
     }
+    if (process != NULL && (process->mode == MODE_RECORD || process->mode == MODE_REPLAY))
+    {
+        DLOG("Memory mapping software counter. Address: 0x%lx, Inital Value: %ld",
+            (unsigned long) &(process->sched_counter), process->sched_counter);
+        vma->vm_flags |= VM_RESERVED;
+
+        SetPageReserved(virt_to_page(&(process->sched_counter)));
+
+        if (remap_pfn_range(vma,
+                vma->vm_start,
+                virt_to_phys((void*)((unsigned long) &(process->sched_counter))) >> PAGE_SHIFT,
+                sizeof(process->sched_counter),
+                PAGE_SHARED))
+            return -EAGAIN;
+        
+        return 0;
+    }
 
     return -ENODEV;
 }
@@ -528,7 +550,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
         case IMITATE_APP_RECORD:
             DLOG("Process %d being recorded by monitor process %d", current->pid, (pid_t) arg);
 
-            process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+            process = (process_t*) kmalloc(sizeof(process_t) < PAGE_SIZE ? PAGE_SIZE : sizeof(process_t), GFP_KERNEL);
             if (! process)
             {
                 result = -ENOMEM;
@@ -538,7 +560,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->pid = current->pid;
             process->mode = MODE_RECORD;
             process->monitor = processes[(pid_t) arg]->monitor;
-            process->sched_counter = NULL;
+            process->sched_counter = 0;
+            process->sched_counter_addr = &(process->sched_counter);
             process->child_id = ++(process->monitor->child_count);
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
@@ -556,7 +579,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
         case IMITATE_APP_REPLAY:
             DLOG("Process %d being replayed by monitor %d", current->pid, (pid_t) arg);
 
-            process = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+            process = (process_t*) kmalloc(sizeof(process_t) < PAGE_SIZE ? PAGE_SIZE : sizeof(process_t), GFP_KERNEL);
             if (! process)
             {
                 result = -ENOMEM;
@@ -566,7 +589,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->pid = current->pid;
             process->mode = MODE_REPLAY;
             process->monitor = processes[(pid_t) arg]->monitor;
-            process->sched_counter = NULL;
+            process->sched_counter = 0;
+            process->sched_counter_addr = &(process->sched_counter);
             process->child_id = ++(process->monitor->child_count);
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
@@ -650,11 +674,6 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             }
             process->monitor->syscall_size = prepdata.syscall_size;
             process->monitor->sched_size = prepdata.sched_size;
-            break;
-
-        case IMITATE_NOTIFY_SCHED_COUNTER:
-            process = processes[current->pid];
-            process->sched_counter = (unsigned long*) arg;
             break;
     }
 
@@ -760,17 +779,13 @@ void* slmalloc(unsigned int size)
     monitor_t *monitor = processes[current->pid]->monitor;
     void* alloced_mem = (void*) (monitor->sched_data + monitor->sched_offset);
 
+    /* Out of memory? return NULL */
     if (size > (SCHED_BUFFER_SIZE - monitor->sched_offset))
     {
-        DLOG("Schedule log memory request: %d. Free: %d of %d bytes.", size,
-            (SCHED_BUFFER_SIZE - monitor->sched_offset),
-            SCHED_BUFFER_SIZE);
-        DLOG("Out of schedule log memory!");
         return NULL;
     }
 
     /* Allocate */
-    VVDLOG("Allocated %d bytes in schedule buffer at offset %d", size, monitor->sched_offset);
     monitor->sched_offset += size;
     return alloced_mem;
 }
@@ -779,10 +794,9 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
 {
     process_t *process = processes[prev->pid];
     sched_log_entry_t *entry;
-    unsigned long counter_val;
-    
+
     /* Process is being recorded and is being swapped out */
-    if ((process != NULL) && (process->mode == MODE_RECORD))
+    if ((process != NULL) && (process->mode == MODE_RECORD) && (prev->pid != next->pid))
     {
         entry = slmalloc(sizeof(sched_log_entry_t));
         if (! entry)
@@ -792,14 +806,7 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
         }
 
         entry->child_id = process->child_id;
-        entry->counter = 0;
-        if (process->sched_counter)
-        {
-            if (get_user(counter_val, (unsigned long __user*) process->sched_counter))
-            {
-                /* Copy failed */
-            }
-        }
+        entry->counter = *(process->sched_counter_addr);
         entry->ip = get_user_mode_instruction_pointer(prev);
     }
 }

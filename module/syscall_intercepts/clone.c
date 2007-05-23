@@ -21,7 +21,7 @@ void post_clone(long *return_value, syscall_args_t *args)
 
     // unsigned long clone_flags = args->arg1;
 
-    process_t *new_proc = (process_t*) kmalloc(sizeof(process_t), GFP_KERNEL);
+    process_t *new_proc = (process_t*) kmalloc(sizeof(process_t) < PAGE_SIZE ? PAGE_SIZE : sizeof(process_t), GFP_KERNEL);
     if (! new_proc)
     {
         ERROR("Could not allocate process data during clone() for process %d (PID %d)", process->child_id, process->pid);
@@ -31,7 +31,8 @@ void post_clone(long *return_value, syscall_args_t *args)
     new_proc->pid = *return_value;
     new_proc->mode = process->mode;
     new_proc->monitor = process->monitor;
-    new_proc->sched_counter = process->sched_counter;
+    new_proc->sched_counter = 0;                /* We will be referring to the child 1's sched_counter */
+    new_proc->sched_counter_addr = process->sched_counter_addr;
     new_proc->child_id = ++(process->monitor->child_count);
 
     pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);

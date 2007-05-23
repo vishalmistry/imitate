@@ -138,13 +138,7 @@ int main(int argc, char* argv[], char* envp[])
     }
     else if (app_pid == 0) /* Child */
     {
-        if (ioctl(dev, IMITATE_APP_RECORD, getppid()) < 0)
-        {
-            perror("Notifying imitate kernel driver of RECORD");
-            goto error_after_dev;
-        }
-
-        if (execve(argv[2], argv+2, envp) < 0)
+        if (execve("./patcher", argv+1, envp) < 0)
         {
             perror("Application execve()");
             return -2;

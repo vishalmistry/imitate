@@ -108,11 +108,12 @@ struct monitor
  */
 struct process
 {
+    sched_counter_t sched_counter;              /* This MUST be first element in struct, otherwise mmap() will result in random behaviour */
+    sched_counter_t *sched_counter_addr;
     pid_t pid;
     char mode;
     monitor_t *monitor;
     unsigned int child_id;
-    unsigned long *sched_counter;
 
     /*
      * Storage for data between pre-/post- system call

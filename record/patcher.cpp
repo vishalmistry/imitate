@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <imitate.h>
 #include "BPatch.h"
 #include "BPatch_function.h"
@@ -10,21 +11,21 @@ BPatch bpatch;
 
 int main(int argc, char *argv[], char* envp[])
 {
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s <prog/all> prog_filename prog_aruments\n", argv[0]);
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s prog_filename prog_aruments\n", argv[0]);
         return 3;
     }
-
+#if 0
     if (strcmp(argv[1], "prog") != 0 && strcmp(argv[1], "all"))
     {
         fprintf(stderr, "Options for patch selection are 'progonly' or 'all'\n");
         return 3;
     }
-
-    int patchall = strcmp(argv[1], "all") != 0;
+#endif
+    int patchall = 0; //strcmp(argv[1], "all") != 0;
 
     // Create process
-    BPatch_process *appProc = bpatch.processCreate(argv[2], (const char**) &(argv[3]));
+    BPatch_process *appProc = bpatch.processCreate(argv[1], (const char**) &(argv[2]));
 
     // Load pthread into the process...
     appProc->loadLibrary("libpthread.so.0");
@@ -218,6 +219,72 @@ int main(int argc, char *argv[], char* envp[])
     // Add ioctl check to entry block
     mainEntryBlock.push_back(&ioctlBlock);
 
+    /*************************************************************************
+     * Counter mmap()                                                        *
+     *************************************************************************/
+
+    // Find the mmap function
+    BPatch_Vector<BPatch_function*> mmapFuncs;
+        appImage->findFunction("mmap", mmapFuncs);
+    if (mmapFuncs.size() == 0)
+        appImage->findFunction("_mmap", mmapFuncs);
+    if (mmapFuncs.size() == 0)
+        appImage->findFunction("__mmap", mmapFuncs);
+
+    if(mmapFuncs.size() == 0)
+    {
+        fprintf(stderr, "Could not find mmap() function");
+        return 2;
+    }
+
+    // Allocate counter
+    BPatch_variableExpr *counterAddr = appProc->malloc(sizeof(sched_counter_t*));
+    sched_counter_t counterVal = 0;
+    counterAddr->writeValue(&counterVal, sizeof(sched_counter_t*), false);
+
+    // Notify kernel of address
+    BPatch_Vector<BPatch_snippet*> mmapArgs;
+    BPatch_constExpr mmapStart(0);
+    BPatch_constExpr mmapLength(sizeof(sched_counter_t));
+    BPatch_constExpr mmapProt(PROT_READ | PROT_WRITE);
+    BPatch_constExpr mmapFlags(MAP_SHARED);
+    BPatch_constExpr mmapOffset(0);
+
+    mmapArgs.push_back(&mmapStart);
+    mmapArgs.push_back(&mmapLength);
+    mmapArgs.push_back(&mmapProt);
+    mmapArgs.push_back(&mmapFlags);
+    mmapArgs.push_back(devFd);
+    mmapArgs.push_back(&mmapOffset);
+
+    // mmap() call
+    BPatch_funcCallExpr mmapCall(*mmapFuncs[0], mmapArgs);
+
+    // assign result to counterAddr
+    BPatch_arithExpr mmapAssign(BPatch_assign, *counterAddr, mmapCall);
+
+    // Add to entry block
+    mainEntryBlock.push_back(&mmapAssign);
+
+    // mmap() result check
+    BPatch_boolExpr mmapCheck(BPatch_eq, *counterAddr, BPatch_constExpr(MAP_FAILED));
+
+    // perror message
+    BPatch_Vector<BPatch_snippet*> mmapErrorArgs;
+    BPatch_constExpr mmapErrorMsg("Memory mapping schedule (back edge) counter");
+    mmapErrorArgs.push_back(&mmapErrorMsg);
+    BPatch_funcCallExpr mmapError(*perrorFuncs[0], mmapErrorArgs);
+
+    BPatch_Vector<BPatch_snippet*> mmapErrorBlock;
+    mmapErrorBlock.push_back(&mmapError);
+    mmapErrorBlock.push_back(&exitOnErrorCall);
+
+    // if (mmap(...) == MAP_FAILED) { perror(...) }
+    BPatch_ifExpr mmapBlock(mmapCheck, BPatch_sequence(mmapErrorBlock));
+
+    mainEntryBlock.push_back(&mmapBlock);
+
+
     // Patch main entry
     BPatch_sequence mainEntrySeq(mainEntryBlock);
     appProc->insertSnippet(mainEntrySeq, *mainPoints);
@@ -227,11 +294,10 @@ int main(int argc, char *argv[], char* envp[])
      * Back-edge patching                                                    *
      *************************************************************************/
 
-    // Allocate counter
-    BPatch_variableExpr *intCounter = appProc->malloc(*appImage->findType("int"));
-
+#if 0
     printf("intCounter address: %x\n PID: %d\n", intCounter->getBaseAddr(), appProc->getPid());
     fflush(stdout);
+#endif
 
     // Find the mutex lock/unlock functions
     BPatch_Vector<BPatch_function*> mutexLockFunctions;
@@ -274,9 +340,11 @@ int main(int argc, char *argv[], char* envp[])
     BPatch_funcCallExpr mutexLockCall(*mutexLockFunctions[0], mutexArgs);
     BPatch_funcCallExpr mutexUnlockCall(*mutexUnlockFunctions[0], mutexArgs);
 
+    BPatch_arithExpr derefCounter(BPatch_deref, *counterAddr);
+
     // Create 'increment counter' snippet
-    BPatch_arithExpr addOneToCounter(BPatch_assign, *intCounter,
-        BPatch_arithExpr(BPatch_plus, *intCounter, BPatch_constExpr(1)));
+    BPatch_arithExpr addOneToCounter(BPatch_assign, derefCounter,
+        BPatch_arithExpr(BPatch_plus, derefCounter, BPatch_constExpr(1)));
 
     BPatch_Vector<BPatch_snippet*> snippet;
     snippet.push_back(&mutexLockCall);
@@ -315,9 +383,9 @@ int main(int argc, char *argv[], char* envp[])
         for(int j = 0; j < loops->size(); j++)
         {
             appProc->insertSnippet(addOneAtomic, *((*loops)[j]->getBackEdge()->getPoint()));
-            printf(".", (int) (*loops)[j]->getBackEdge()->getPoint()->getAddress());
+            fprintf(stderr, ".", (int) (*loops)[j]->getBackEdge()->getPoint()->getAddress());
         }
-        printf("\n");
+        fprintf(stderr, "\n");
 
         // Free the loops found
         delete(loops);
@@ -346,7 +414,7 @@ int main(int argc, char *argv[], char* envp[])
     BPatch_constExpr formatString("Total Back-branches: %d\n");
 
     printfArgs.push_back(&formatString);
-    printfArgs.push_back(intCounter);
+    printfArgs.push_back(&derefCounter);
 
     // Build call to printf()
     BPatch_funcCallExpr printfCall(*printfFuncs[0], printfArgs);
@@ -363,6 +431,6 @@ int main(int argc, char *argv[], char* envp[])
         bpatch.waitForStatusChange();
     }
     
-    printf("Done.\n");
+    fprintf(stderr, "Done.\n");
     return 0;
 }
