@@ -35,38 +35,38 @@ char* log_file_path(char* dir, char* fname)
     return path;
 }
 
-int read_string_array_from_file(char*** arr, FILE* filp)
+int read_string_array_from_file_resize(char*** arr, FILE* filp, int increase_size, int offset)
 {
     int arr_size, str_size, read_count, i;
 
+    if (offset > increase_size)
+        return -2;
+    
     read_count = fread(&arr_size, sizeof(arr_size), 1, filp);
     if (read_count < 1)
-    {
         return -1;
-    }
 
-    *arr = (char**) malloc(sizeof(char*) * (arr_size + 1));
+    *arr = (char**) malloc(sizeof(char*) * (arr_size + 1 + increase_size));
     if (! *arr)
-    {
         return -2;
-    }
 
     (*arr)[arr_size] = NULL;
-    for (i = 0; i < arr_size; i++)
+    for (i = offset; i < arr_size + offset; i++)
     {
         read_count = fread(&str_size, sizeof(str_size), 1, filp);
         if (read_count < 1)
-        {
             return -1;
-        }
         (*arr)[i] = (char*) malloc(sizeof(char) * (str_size + 1));
         read_count = fread((*arr)[i], str_size, 1, filp);
         if (read_count < 1)
-        {
             return -1;
-        }
         (*arr)[i][str_size] = '\0';
     }
 
     return 0;
+}
+
+int read_string_array_from_file(char*** arr, FILE* filp)
+{
+    return read_string_array_from_file_resize(arr, filp, 0, 0);
 }

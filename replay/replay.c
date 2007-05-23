@@ -23,7 +23,7 @@ void read_arguments_log(char* log_dir, char*** argv, char*** environ)
         exit(-1);
     }
 
-    if (read_string_array_from_file(argv, arguments_file) < 0)
+    if (read_string_array_from_file_resize(argv, arguments_file, 1, 1) < 0)
     {
         perror("Reading arguments from arguments log");
         goto read_fail;
@@ -247,11 +247,8 @@ int main(int argc, char* argv[])
     }
     else if (app_pid == 0) /* Child */
     {
-        if (ioctl(dev, IMITATE_APP_REPLAY, getppid()) < 0)
-        {
-            perror("Notifying imitate kernel driver of REPLAY");
-            goto error_after_dev;
-        }
+        prog_args[0] = malloc(strlen("./patcher"));
+        strcpy(prog_args[0], "./patcher");
 
         if (execve(prog_args[0], prog_args, prog_env) < 0)
         {

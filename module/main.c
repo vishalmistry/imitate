@@ -796,7 +796,7 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
     sched_log_entry_t *entry;
 
     /* Process is being recorded and is being swapped out */
-    if ((process != NULL) && (process->mode == MODE_RECORD) && (prev->pid != next->pid))
+    if ((process != NULL) && (process->mode == MODE_RECORD))
     {
         entry = slmalloc(sizeof(sched_log_entry_t));
         if (! entry)
