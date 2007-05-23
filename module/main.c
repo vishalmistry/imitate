@@ -529,6 +529,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 goto allocschedbuf_fail;
             }
 
+            monitor->current_running_pid = 0;
             monitor->mmap_select = MAP_SYSCALL_BUFFER;
             monitor->child_count = 0;
             monitor->syscall_size = 0;
@@ -794,19 +795,30 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
 {
     process_t *process = processes[prev->pid];
     sched_log_entry_t *entry;
+    pid_t* crp;
 
     /* Process is being recorded and is being swapped out */
     if ((process != NULL) && (process->mode == MODE_RECORD))
     {
-        entry = slmalloc(sizeof(sched_log_entry_t));
-        if (! entry)
-        {
-            /* Out of schedule memory */
-            return;
-        }
+        crp = &(process->monitor->current_running_pid);
 
-        entry->child_id = process->child_id;
-        entry->counter = *(process->sched_counter_addr);
-        entry->ip = get_user_mode_instruction_pointer(prev);
+        if (prev->pid != *crp)  /* Is different thread to before? */
+        {
+            if (*crp > 0)   /* Process has been for at least one quantum */
+            {
+                entry = slmalloc(sizeof(sched_log_entry_t));
+                if (! entry)
+                {
+                    /* Out of schedule memory */
+                    return;
+                }
+
+                entry->child_id = process->child_id;
+                entry->counter = *(process->sched_counter_addr);
+                entry->ip = get_user_mode_instruction_pointer(prev);
+            }
+
+            *crp = prev->pid;
+        }
     }
 }
