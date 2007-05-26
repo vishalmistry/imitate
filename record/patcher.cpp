@@ -368,7 +368,11 @@ int main(int argc, char *argv[], char* envp[])
     {
         (*functions)[i]->getName(name, 199);
         (*functions)[i]->getModuleName(modname, 199);
-        if (patchall && strcmp(modname, "DEFAULT_MODULE") != 0) continue;
+        if ((patchall && strcmp(modname, "DEFAULT_MODULE") != 0) ||
+            strncmp(name, "pthread", 7) == 0 ||
+            strncmp(modname, "libpthread", 10) == 0 ||
+            (name[0] == '_' && name[1] != '_' && strncmp(modname, "libc", 4) == 0))
+            continue;
 
         fprintf(stderr, "patcher: Patching function: '%s' (%s)", name, modname);
 
@@ -398,6 +402,7 @@ int main(int argc, char *argv[], char* envp[])
     free(modname);
 
 
+#if 0
     /*************************************************************************
      * Exit point counter print patch                                        *
      *************************************************************************/
@@ -421,6 +426,7 @@ int main(int argc, char *argv[], char* envp[])
 
     // Patch into exit()
     appProc->insertSnippet(printfCall, *exitPoints);
+#endif
 
     // Continue mutatee...
     appProc->continueExecution();

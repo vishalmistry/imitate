@@ -18,7 +18,7 @@ int main(int argc, char **argv)
     while (! feof(f))
     {
         readcount = fread(&sce, sizeof(sched_log_entry_t), 1, f);
-        if (readcount < 1)
+        if (readcount < 1 && !feof(f))
         {
             perror("Error reading from log file");
             break;

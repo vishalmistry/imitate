@@ -150,13 +150,56 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
 
 }
 
+void fill_sched_buffer(FILE* sched_log_file, char* sched_log, callback_t *cbdata)
+{
+    int record_size, read_count;
+    char sched_full;
+    sched_log_entry_t *sched_log_entry;
+
+    cbdata->size = 0;
+    sched_full = 0;
+
+    while (! sched_full)
+    {
+        record_size = sizeof(*sched_log_entry);
+
+        sched_log_entry = (sched_log_entry_t*) (sched_log + cbdata->size);
+
+        /* Does the buffer have enough room for a record? */
+        if (cbdata->size + record_size < SCHED_BUFFER_SIZE)
+        {
+            /* Read the record */
+            read_count = fread(sched_log_entry, record_size, 1, sched_log_file);
+
+            if (read_count < 1)  /* Read failed */ 
+            {
+                if (!feof(sched_log_file))
+                {
+                    perror("Reading from schedule call log file (sched_log_entry)");
+                }
+                break;
+            }
+            else        /* Read succeeded */
+            {
+                cbdata->size += record_size;
+            }
+        }
+        else
+        {
+            /* No more space */
+            sched_full = 1;
+        }
+    }
+}
+
+
 int main(int argc, char* argv[])
 {
     int dev, i;
     pid_t app_pid;
     char **prog_args, **prog_env;
-    char *syscall_log, *fpath;
-    FILE* syscall_log_file, sched_log_file;
+    char *syscall_log, *sched_log, *fpath;
+    FILE *syscall_log_file, *sched_log_file;
 
     callback_t cbdata =
     {
@@ -192,6 +235,18 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    /* Open schedule log file */
+    fpath = log_file_path(argv[1], "sched");
+    sched_log_file = fopen(fpath, "rb");
+    free(fpath);
+
+    if (! sched_log_file)
+    {
+        perror("Opening schedule log");
+        return -1;
+    }
+
+
     dev = open("/dev/imitate0", O_RDWR);
     if (dev < 0)
     {
@@ -211,8 +266,16 @@ int main(int argc, char* argv[])
         goto error_after_dev;
     }
 
+    if ((sched_log = (char*) mmap(NULL, SCHED_BUFFER_SIZE, PROT_READ, MAP_SHARED, dev, 0)) == MAP_FAILED)
+    {
+        perror("Memory mapping schedule log");
+        goto error_after_dev;
+    }
+
     fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
     prepdata.syscall_size = cbdata.size;
+    fill_sched_buffer(sched_log_file, sched_log, &cbdata);
+    prepdata.sched_size = cbdata.size;
 
     if (ioctl(dev, IMITATE_PREP_REPLAY, &prepdata) < 0)
     {
@@ -236,6 +299,10 @@ int main(int argc, char* argv[])
             {
                 case SYSCALL_DATA:
                     fill_syscall_buffer(syscall_log_file, syscall_log, &cbdata);
+                    break;
+
+                case SCHED_DATA:
+                    fill_sched_buffer(sched_log_file, sched_log, &cbdata);
                     break;
 
                 case APP_KILLED:
