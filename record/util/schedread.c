@@ -23,7 +23,8 @@ int main(int argc, char **argv)
             perror("Error reading from log file");
             break;
         }
-        printf("%d: child_id: %ld, counter: %ld, eip: 0x%lx\n", ++i, sce.child_id, sce.counter, sce.ip);
+        if (readcount)
+            printf("%d: child_id: %ld, counter: %ld, eip: 0x%lx\n", ++i, sce.child_id, sce.counter, sce.ip);
     }
 
     fclose(f);

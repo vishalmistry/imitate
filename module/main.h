@@ -94,7 +94,7 @@ struct monitor
     struct process_list app_processes;
     char   mmap_select;
     unsigned int child_count;
-    pid_t current_running_pid;
+    struct task_struct *last_running_thread;
     callback_t ready_data;
     unsigned int syscall_size;
     unsigned int sched_size;

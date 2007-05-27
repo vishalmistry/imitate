@@ -6,11 +6,15 @@
 
 #include "intercept.h"
 
+extern long get_user_mode_instruction_pointer(struct task_struct *task);
+void* slmalloc(monitor_t *monitor, unsigned int size);
+
 void pre_exit_group(syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
     monitor_t *monitor = process->monitor;
     syscall_log_entry_t *entry;
+    sched_log_entry_t *sched_entry;
 /*    struct list_head *pos, *tmp;
     struct process_list *item; */
 
@@ -19,6 +23,19 @@ void pre_exit_group(syscall_args_t *args)
     if (recording(process))
     {
         write_syscall_log_entry(__NR_exit_group, error_code, NULL, 0);
+
+        /* Write final log entry... to keep track of what last thread was */
+        sched_entry = slmalloc(process->monitor, sizeof(*sched_entry));
+        if (! sched_entry)
+        {
+            ERROR("Out of schedule memory for final schedule entry. Not writing.");
+        }
+        else
+        {
+            sched_entry->child_id = process->child_id;
+            sched_entry->counter = *(process->sched_counter_addr);
+            sched_entry->ip = get_user_mode_instruction_pointer(current);
+        }
 
         /* Last process */
         if (process->child_id == 1)

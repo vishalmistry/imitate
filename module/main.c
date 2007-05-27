@@ -529,7 +529,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 goto allocschedbuf_fail;
             }
 
-            monitor->current_running_pid = 0;
+            monitor->last_running_thread = NULL;
             monitor->mmap_select = MAP_SYSCALL_BUFFER;
             monitor->child_count = 0;
             monitor->syscall_size = 0;
@@ -564,6 +564,8 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->sched_counter = 0;
             process->sched_counter_addr = &(process->sched_counter);
             process->child_id = ++(process->monitor->child_count);
+
+            process->monitor->last_running_thread = current;
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
             if (! pl_item)
@@ -775,9 +777,8 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
     return syscall_return_addresses[current->pid];
 }
 
-void* slmalloc(unsigned int size)
+void* slmalloc(monitor_t *monitor, unsigned int size)
 {
-    monitor_t *monitor = processes[current->pid]->monitor;
     void* alloced_mem = (void*) (monitor->sched_data + monitor->sched_offset);
 
     /* Out of memory? return NULL */
@@ -793,32 +794,32 @@ void* slmalloc(unsigned int size)
 
 void context_switch_hook(struct task_struct *prev, struct task_struct *next)
 {
-    process_t *process = processes[prev->pid];
+    process_t *pproc = processes[prev->pid],
+              *nproc = processes[next->pid];
     sched_log_entry_t *entry;
-    pid_t* crp;
 
     /* Process is being recorded and is being swapped out */
-    if ((process != NULL) && (process->mode == MODE_RECORD))
+    if ((pproc != NULL) && (pproc->mode == MODE_RECORD))
     {
-        crp = &(process->monitor->current_running_pid);
+        pproc->monitor->last_running_thread = prev;
+    }
 
-        if (prev->pid != *crp)  /* Is different thread to before? */
+    /* Process is being recorded and is being swapped in */
+    if ((nproc != NULL) && (nproc->mode == MODE_RECORD))
+    {
+        if (next != nproc->monitor->last_running_thread)
         {
-            if (*crp > 0)   /* Process has been for at least one quantum */
+            entry = slmalloc(nproc->monitor, sizeof(sched_log_entry_t));
+            if (! entry)
             {
-                entry = slmalloc(sizeof(sched_log_entry_t));
-                if (! entry)
-                {
-                    /* Out of schedule memory */
-                    return;
-                }
-
-                entry->child_id = process->child_id;
-                entry->counter = *(process->sched_counter_addr);
-                entry->ip = get_user_mode_instruction_pointer(prev);
+                /* Out of schedule memory */
+                return;
             }
 
-            *crp = prev->pid;
+            pproc = processes[nproc->monitor->last_running_thread->pid];
+            entry->child_id = pproc->child_id;
+            entry->counter = *(pproc->sched_counter_addr);
+            entry->ip = get_user_mode_instruction_pointer(nproc->monitor->last_running_thread);
         }
     }
 }
