@@ -114,6 +114,9 @@ int main(int argc, char *argv[])
 
         fprintf(stderr, "Patching function: '%s' (%s)", name, modname);
 
+        if (strcmp(name, "main") != 0 && strncmp(modname, "libdyninst",10) != 0)
+            appProc->insertSnippet(addOneAtomic, *((*functions)[i]->findPoint(BPatch_entry)));
+
         // Get the control flow graph for the procedure
         BPatch_flowGraph *graph = (*functions)[i]->getCFG();
 

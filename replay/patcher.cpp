@@ -346,9 +346,44 @@ int main(int argc, char *argv[], char* envp[])
     BPatch_arithExpr addOneToCounter(BPatch_assign, derefCounter,
         BPatch_arithExpr(BPatch_plus, derefCounter, BPatch_constExpr(1)));
 
+
+    // Create step call
+    // ioctl() arguments
+    BPatch_Vector<BPatch_snippet*> stepIoctlArgs;
+    BPatch_constExpr stepIoctlOperation(IMITATE_START_STEP);
+    BPatch_constExpr stepIoctlArg(0);
+    stepIoctlArgs.push_back(devFd);
+    stepIoctlArgs.push_back(&stepIoctlOperation);
+    stepIoctlArgs.push_back(&stepIoctlArg);
+
+    // ioctl() call
+    BPatch_funcCallExpr stepIoctlCall(*ioctlFunctions[0], stepIoctlArgs);
+
+    // stepIoctl() result check
+    BPatch_boolExpr stepIoctlCheck(BPatch_lt, stepIoctlCall, BPatch_constExpr(0));
+    
+    // perror message
+    BPatch_Vector<BPatch_snippet*> stepIoctlErrorArgs;
+    BPatch_constExpr stepIoctlErrorMsg("Notifying imitate kernel driver of START_STEP");
+    stepIoctlErrorArgs.push_back(&stepIoctlErrorMsg);
+    BPatch_funcCallExpr stepIoctlError(*perrorFuncs[0], stepIoctlErrorArgs);
+
+    BPatch_Vector<BPatch_snippet*> stepIoctlErrorBlock;
+    stepIoctlErrorBlock.push_back(&stepIoctlError);
+    stepIoctlErrorBlock.push_back(&exitOnErrorCall);
+
+    // if (stepIoctl(...) < 0) { perror(...) }
+    BPatch_ifExpr stepIoctlBlock(stepIoctlCheck, BPatch_sequence(stepIoctlErrorBlock));
+
+    // When counter reaches 0, set breakpoint.
+    BPatch_boolExpr stepCheck(BPatch_eq, derefCounter, BPatch_constExpr(0));
+    BPatch_ifExpr checkStepBlock(stepCheck, stepIoctlBlock);
+
+
     BPatch_Vector<BPatch_snippet*> snippet;
     snippet.push_back(&mutexLockCall);
     snippet.push_back(&addOneToCounter);
+    snippet.push_back(&stepIoctlBlock);
     snippet.push_back(&mutexUnlockCall);
 
     BPatch_sequence addOneAtomic(snippet);
@@ -371,10 +406,15 @@ int main(int argc, char *argv[], char* envp[])
         if ((patchall && strcmp(modname, "DEFAULT_MODULE") != 0) ||
             strncmp(name, "pthread", 7) == 0 ||
             strncmp(modname, "libpthread", 10) == 0 ||
+            strncmp(modname, "libdyninst", 10) == 0 ||
             (name[0] == '_' && name[1] != '_' && strncmp(modname, "libc", 4) == 0))
             continue;
 
         fprintf(stderr, "patcher: Patching function: '%s' (%s)", name, modname);
+
+        // Patch back-edge for call
+        if (strcmp(name, "main") != 0)
+            appProc->insertSnippet(addOneAtomic, *((*functions)[i]->findPoint(BPatch_entry)));
 
         // Get the control flow graph for the procedure
         BPatch_flowGraph *graph = (*functions)[i]->getCFG();

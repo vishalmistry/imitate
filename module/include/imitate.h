@@ -29,6 +29,8 @@
 #define IMITATE_MONITOR_CB _IOR(IMITATE_IOC_MAGIC, 4, callback_t)
 /* Notify driver of initial buffer sizes during replay */
 #define IMITATE_PREP_REPLAY _IOR(IMITATE_IOC_MAGIC, 5, prep_replay_t)
+/* Ask driver to set breakpoint */
+#define IMITATE_START_STEP _IOR(IMITATE_IOC_MAGIC, 6, int)
 
 #define NO_DATA         0x0
 #define SYSCALL_DATA    0x1
@@ -51,7 +53,7 @@
 /*
  * Counter type
  */
-#define sched_counter_t     unsigned long
+#define sched_counter_t     long
 
 typedef struct
 {

@@ -12,11 +12,14 @@
 void pre_mmap2(syscall_args_t *args)
 {
     process_t *process = processes[current->pid];
+    syscall_log_entry_t *entry;
 
     unsigned long fd = args->arg5;
     
     if ((replaying(process)) && (fd != -1))
     {
+        entry = get_next_syscall_log_entry(__NR_mmap2);
+        /* start */ args->arg1 = entry->return_value;
         /* prot */ args->arg3 |= PROT_WRITE;
         /* flags */ args->arg4 |= MAP_ANONYMOUS;
     }
@@ -35,7 +38,7 @@ void post_mmap2(long *return_value, syscall_args_t *args)
     {
         if (recording(process))
         {
-            write_syscall_log_entry(__NR_mmap2, 0, (char*) (*return_value), len);
+            write_syscall_log_entry(__NR_mmap2, *return_value, (char*) (*return_value), len);
         }
         else if (replaying(process))
         {

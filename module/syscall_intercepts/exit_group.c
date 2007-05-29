@@ -32,6 +32,7 @@ void pre_exit_group(syscall_args_t *args)
         }
         else
         {
+            DLOG("Writing final schedule entry - Child ID: %d", process->child_id);
             sched_entry->child_id = process->child_id;
             sched_entry->counter = *(process->sched_counter_addr);
             sched_entry->ip = get_user_mode_instruction_pointer(current);

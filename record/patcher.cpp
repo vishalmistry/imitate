@@ -371,10 +371,15 @@ int main(int argc, char *argv[], char* envp[])
         if ((patchall && strcmp(modname, "DEFAULT_MODULE") != 0) ||
             strncmp(name, "pthread", 7) == 0 ||
             strncmp(modname, "libpthread", 10) == 0 ||
+            strncmp(modname, "libdyninst", 10) == 0 ||
             (name[0] == '_' && name[1] != '_' && strncmp(modname, "libc", 4) == 0))
             continue;
 
         fprintf(stderr, "patcher: Patching function: '%s' (%s)", name, modname);
+
+        // Patch back-edge for call
+        if (strcmp(name, "main") != 0)
+            appProc->insertSnippet(addOneAtomic, *((*functions)[i]->findPoint(BPatch_entry)));
 
         // Get the control flow graph for the procedure
         BPatch_flowGraph *graph = (*functions)[i]->getCFG();

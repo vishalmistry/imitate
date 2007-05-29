@@ -9,7 +9,7 @@
 void pre_clone(syscall_args_t *args)
 {
     /* Immediately stop the process once it is cloned */
-    /* clone_flags */ //args->arg1 |= CLONE_STOPPED;
+    /* clone_flags */ args->arg1 |= CLONE_STOPPED;
 }
 
 void post_clone(long *return_value, syscall_args_t *args)
@@ -51,6 +51,9 @@ void post_clone(long *return_value, syscall_args_t *args)
     if (recording(process))
     {
         /* Let it run */
+        VDLOG("Sending SIGCONT to child %d", new_proc->child_id);
+        kill_proc(new_proc->pid, SIGCONT, 1);
+
         write_syscall_log_entry(__NR_clone, new_proc->child_id, NULL, 0);
     }
     else if (replaying(process))
@@ -62,6 +65,7 @@ void post_clone(long *return_value, syscall_args_t *args)
             DLOG("clone() system call: log file indicates child %ld being created, but child %d was created instead.",
                 entry->return_value, new_proc->child_id);
 
+        kill_proc(new_proc->pid, SIGCONT, 1);
         replay_void(process);
 
         /* TODO */

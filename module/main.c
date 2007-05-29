@@ -678,6 +678,11 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->monitor->syscall_size = prepdata.syscall_size;
             process->monitor->sched_size = prepdata.sched_size;
             break;
+
+        case IMITATE_START_STEP:
+            process = processes[current->pid];
+            
+            break;
     }
 
     allocproc_fail:
@@ -820,6 +825,9 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
             entry->child_id = pproc->child_id;
             entry->counter = *(pproc->sched_counter_addr);
             entry->ip = get_user_mode_instruction_pointer(nproc->monitor->last_running_thread);
+
+            /* Reset counter */
+            *(pproc->sched_counter_addr) = 0;
         }
     }
 }
