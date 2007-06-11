@@ -30,10 +30,30 @@
 #define MODE_REPLAY     3
 
 /*
+ * BLock types
+ */
+#define BLOCK_NONE              0   /* Not blocked */
+#define BLOCK_CLONE             1   /* Blocked in clone, send SIGCONT to wake */
+#define BLOCK_INTERRUPTIBLE     2   /* Blocked from scheduler, use wake */
+#define BLOCK_SEMAPHORE         3   /* Blocked on semaphore, use up() */
+
+/*
+ * Context switch point
+ */
+#define SWITCH_NONE     0
+#define SWITCH_SYSCALL  1
+#define SWITCH_BPOINT   2
+
+/*
  * mmap() selection
  */
 #define MAP_SYSCALL_BUFFER  0
 #define MAP_SCHED_BUFFER    1
+
+/*
+ * System call exit point
+ */
+#define SYSCALL_EXIT_POINT 0xFFFFE410
 
 /*
  * Debug message macros
@@ -109,12 +129,18 @@ struct monitor
  */
 struct process
 {
-    sched_counter_t sched_counter;              /* This MUST be first element in struct, otherwise mmap() will result in random behaviour */
+    sched_counter_t sched_counter;  /* This MUST be first element in struct, otherwise mmap() will result in random behaviour */
     sched_counter_t *sched_counter_addr;
+    char   mmap_counter;
     pid_t pid;
     char mode;
     monitor_t *monitor;
     unsigned int child_id;
+    char block_type;
+    unsigned long bpoint_addr;
+    char bpoint_byte;
+
+    struct semaphore syscall_lock_sem;
 
     /*
      * Storage for data between pre-/post- system call

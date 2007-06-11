@@ -383,7 +383,7 @@ int main(int argc, char *argv[], char* envp[])
     BPatch_Vector<BPatch_snippet*> snippet;
     snippet.push_back(&mutexLockCall);
     snippet.push_back(&addOneToCounter);
-    snippet.push_back(&stepIoctlBlock);
+    snippet.push_back(&checkStepBlock);
     snippet.push_back(&mutexUnlockCall);
 
     BPatch_sequence addOneAtomic(snippet);
@@ -476,7 +476,9 @@ int main(int argc, char *argv[], char* envp[])
     {
         bpatch.waitForStatusChange();
     }
-    
+
+    fprintf(stderr, "Exit - Signal: %d, Exit Code: %d\n", appProc->getExitSignal(), appProc->getExitCode());
+
     fprintf(stderr, "Done.\n");
     return 0;
 }

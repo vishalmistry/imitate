@@ -16,6 +16,8 @@ void pre_mmap2(syscall_args_t *args)
 
     unsigned long fd = args->arg5;
     
+    if (process && !process->mmap_counter) return;
+
     if ((replaying(process)) && (fd != -1))
     {
         entry = get_next_syscall_log_entry(__NR_mmap2);
@@ -33,6 +35,12 @@ void post_mmap2(long *return_value, syscall_args_t *args)
 
     unsigned long len = args->arg2;
     unsigned long fd = args->arg5;
+
+    if (process && !process->mmap_counter)
+    {
+        process->mmap_counter = 1;
+        return;
+    }
 
     if ((*return_value != MAP_FAILED) && (fd != -1))
     {

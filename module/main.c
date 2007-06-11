@@ -34,12 +34,19 @@ extern void syscall_intercept(void);
 /*
  * Architecture dependent instruction pointer
  */
+extern struct pt_regs* get_user_mode_regs(struct task_struct *task);
 extern long get_user_mode_instruction_pointer(struct task_struct *task);
 
 /* 
  * Context switch hook function
  */
 extern void set_context_switch_hook(void (*csh)(struct task_struct*, struct task_struct*));
+
+/* 
+ * Step exception hook function
+ */
+extern void set_step_exception_hook(int (*seh)(struct pt_regs*, int point));
+extern void set_int3_trap_hook(int (*seh)(struct pt_regs*, long error_code, int point));
 
 /*
  * System call table and the backup
@@ -114,6 +121,15 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
  * Context-switch hook prototype
  */
 void context_switch_hook(struct task_struct *prev, struct task_struct *next);
+
+/*
+ * Step exception hook prototype
+ */
+int step_exception_hook(struct pt_regs *regs, int point);
+int int3_trap_hook(struct pt_regs *regs, long error_code, int point);
+
+sched_log_entry_t *get_schedule_entry(void);
+int set_breakpoint_for_sched(process_t *process);
 
 asmlinkage void empty_callback(void)
 {
@@ -239,6 +255,11 @@ static int __init kmod_init(void)
     DLOG("Installing context switch hook");
     set_context_switch_hook(context_switch_hook);
 
+    /* Set up step exception hook */
+    DLOG("Installing step exception hook");
+    set_step_exception_hook(step_exception_hook);
+    set_int3_trap_hook(int3_trap_hook);
+
     LOG("Loaded " MODULE_NAME " kernel module");
 
     return 0;
@@ -274,6 +295,8 @@ static void __exit kmod_exit(void)
     DLOG("Unloading " MODULE_NAME " module");
 
     set_context_switch_hook(NULL);
+    set_step_exception_hook(NULL);
+    set_int3_trap_hook(NULL);
 
     /* Clean up memory (just in case anything is left over) */
     for (i = 0; i < PID_MAX_LIMIT; i++)
@@ -482,6 +505,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
     monitor_t *monitor;
     struct process_list* pl_item;
     prep_replay_t prepdata;
+    sched_log_entry_t *sched_entry;
     
     /* Verify cmd is valid */
     if (_IOC_TYPE(cmd) != IMITATE_IOC_MAGIC) return -ENOTTY;
@@ -558,12 +582,16 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 goto allocproc_fail; /* break; */
             }
             
+            process->mmap_counter = 0;
             process->pid = current->pid;
             process->mode = MODE_RECORD;
             process->monitor = processes[(pid_t) arg]->monitor;
             process->sched_counter = 0;
             process->sched_counter_addr = &(process->sched_counter);
             process->child_id = ++(process->monitor->child_count);
+            process->block_type = BLOCK_NONE;
+            process->bpoint_addr = 0;
+            process->bpoint_byte = 0;
 
             process->monitor->last_running_thread = current;
 
@@ -589,12 +617,18 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 goto allocproc_fail; /* break; */
             }
 
+            process->mmap_counter = 0;
             process->pid = current->pid;
             process->mode = MODE_REPLAY;
             process->monitor = processes[(pid_t) arg]->monitor;
             process->sched_counter = 0;
             process->sched_counter_addr = &(process->sched_counter);
             process->child_id = ++(process->monitor->child_count);
+            process->block_type = BLOCK_NONE;
+            process->bpoint_addr = 0;
+            process->bpoint_byte = 0;
+
+            sema_init(&(process->syscall_lock_sem), 1);
 
             pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
             if (! pl_item)
@@ -606,6 +640,19 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             list_add_tail(&(pl_item->list), &(process->monitor->app_processes.list));
 
             processes[current->pid] = process;
+
+            /* Check if we need to set breakpoint immediately */
+            sched_entry = get_schedule_entry();
+            if (sched_entry->counter == 0)
+            {
+                DLOG("Received APP_REPLAY. Initial entry has counter = 0. Setting breakpoint.");
+                set_breakpoint_for_sched(process);
+            }
+            else
+            {
+                DLOG("Set counter to %ld", -sched_entry->counter);
+                *(process->sched_counter_addr) = -sched_entry->counter;
+            }
             break;
 
         case IMITATE_MONITOR_CB:
@@ -669,19 +716,32 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
 
         case IMITATE_PREP_REPLAY:
             process = processes[current->pid];
-            if (copy_from_user(&prepdata, (void __user*) arg, sizeof(prepdata)))
+            
+            if (process != NULL && process->mode == MODE_MONITOR)
             {
-                ERROR("CRITICAL: Failed to copy replay preparation data from monitor with PID %d. Cannot recover!", current->pid);
-                prepdata.syscall_size = 0;
-                prepdata.sched_size = 0;
+                if (copy_from_user(&prepdata, (void __user*) arg, sizeof(prepdata)))
+                {
+                    ERROR("CRITICAL: Failed to copy replay preparation data from monitor with PID %d. Cannot recover!", current->pid);
+                    prepdata.syscall_size = 0;
+                    prepdata.sched_size = 0;
+                }
+                process->monitor->syscall_size = prepdata.syscall_size;
+                process->monitor->sched_size = prepdata.sched_size;
             }
-            process->monitor->syscall_size = prepdata.syscall_size;
-            process->monitor->sched_size = prepdata.sched_size;
+            else
+                result = -EFAULT;
             break;
 
         case IMITATE_START_STEP:
             process = processes[current->pid];
-            
+
+            if (process != NULL && process->mode == MODE_REPLAY)
+            {
+                DLOG("Received SET_BPOINT. Setting Breakpoint.");
+                result = set_breakpoint_for_sched(process);
+            }
+            else
+                result = -EFAULT;
             break;
     }
 
@@ -797,6 +857,75 @@ void* slmalloc(monitor_t *monitor, unsigned int size)
     return alloced_mem;
 }
 
+sched_log_entry_t *get_schedule_entry(void)
+{
+    process_t *process = processes[current->pid];
+    monitor_t *monitor = process->monitor;
+    sched_log_entry_t *log_entry = NULL;
+
+    log_entry = (sched_log_entry_t*) (monitor->sched_data + monitor->sched_offset);
+    
+    return log_entry;
+}
+
+void schedule_next_child(void)
+{
+    process_t *process = processes[current->pid], *next_proc;
+    monitor_t *monitor = process->monitor;
+    sched_log_entry_t *entry = NULL;
+    struct task_struct *next_task = NULL;
+    struct list_head *pos;
+    struct process_list *item;
+
+    /* Next Entry */
+    monitor->sched_offset += sizeof(sched_log_entry_t);
+    entry = get_schedule_entry();
+
+    /* Find next child and unblock */
+    list_for_each(pos, &(monitor->app_processes.list))
+    {
+        item = list_entry(pos, struct process_list, list);
+        next_proc = item->process;
+
+        /* Found child */
+        if (next_proc->child_id == entry->child_id)
+        {
+            next_task = find_task_by_pid(next_proc->pid);
+
+            switch (next_proc->block_type)
+            {
+                case BLOCK_CLONE:
+                    DLOG("Waking child %d with SIGCONT", next_proc->child_id);
+                    wake_up_process(next_task);
+                    kill_proc(next_proc->pid, SIGCONT, 1);
+                    break;
+
+                case BLOCK_INTERRUPTIBLE:
+                    DLOG("Waking child %d with wake_up_process()", next_proc->child_id);
+                    wake_up_process(next_task);
+                    break;
+
+                case BLOCK_SEMAPHORE:
+                    DLOG("Waking child by releasing system call semaphore");
+                    up(&(next_proc->syscall_lock_sem));
+                    break;
+            }
+            
+            /* Clear block type */
+            next_proc->block_type = BLOCK_NONE;
+
+            /* Set breakpoint immediately if counter value is 0 */
+            if (entry->counter == 0)
+                set_breakpoint_for_sched(next_proc);
+
+            /* Child woken, exit loop */
+            break;
+        }
+    }
+
+    schedule();
+}
+
 void context_switch_hook(struct task_struct *prev, struct task_struct *next)
 {
     process_t *pproc = processes[prev->pid],
@@ -830,4 +959,83 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
             *(pproc->sched_counter_addr) = 0;
         }
     }
+}
+
+int int3_trap_hook(struct pt_regs *regs, long error_code, int point)
+{
+    process_t *process = processes[current->pid];
+
+    if (process == NULL || point != 4) return 0;
+
+    DLOG("TRAP HOOK %lx", regs->eip);
+
+    /* If breakpoint was not set by us */
+    if (process->bpoint_addr != (regs->eip - 1)) return 0;
+
+    if (! put_user(process->bpoint_byte, (char *) process->bpoint_addr) )
+        ERROR("CRITICAL: Unable to restore saved breakpoint byte! Cannot recover!");
+    else
+        DLOG("Restored breakpoint byte successfully.");
+
+    /* Set instruction pointer to re-execute instruction */
+    regs->eip = regs->eip - 1;
+
+    /* Dequeue process */
+    process->block_type = BLOCK_INTERRUPTIBLE;
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule_next_child();
+
+    process->bpoint_addr = 0;
+    return 1;
+}
+
+int set_breakpoint_for_sched(process_t *process)
+{
+    unsigned long ip = get_schedule_entry()->ip;
+
+    if (ip != SYSCALL_EXIT_POINT)
+    {
+        /* Save byte at breakpoint address */
+        if (get_user(process->bpoint_byte, (char*) ip) == 0)
+        {
+            /* Set breakpoint */
+            if (put_user((char) 0xCC, (char*) ip) == 0)
+            {
+                DLOG("Set breakpoint at 0x%lx", ip);
+                process->bpoint_addr = ip;
+            }
+            else
+                ERROR("Couldn't set breakpoint for replaying schedule. Replay is no longer accurate.");
+        }
+        else
+            ERROR("Couldn't save byte at breakpoint address. Replay is no longer accurate");
+
+        return 0;
+    }
+    else
+    {
+        DLOG("Context switch in kernel within system call. Preventing user-space reentry");
+        if (down_interruptible(&(process->syscall_lock_sem)))
+            return -EINTR;
+
+        return 0;
+    }
+}
+
+int step_exception_hook(struct pt_regs* regs, int point)
+{
+    process_t *process = processes[current->pid];
+
+    if (point == 1) return 1; else return 0;
+
+    DLOG("RECEIVED STEP: %lx", regs->eip);
+
+    if (process != NULL && process->mode == MODE_REPLAY)
+    {
+        clear_tsk_thread_flag(current, TIF_SINGLESTEP);
+        DLOG("RECEIVED STEP: %lx", regs->eip);
+
+        return 1;
+    }
+    return 0;
 }

@@ -28,11 +28,17 @@ void post_clone(long *return_value, syscall_args_t *args)
         goto proc_malloc_fail;
     }
 
+    new_proc->mmap_counter = process->mmap_counter;
     new_proc->pid = *return_value;
     new_proc->mode = process->mode;
     new_proc->monitor = process->monitor;
     new_proc->sched_counter = 0;                /* We will be referring to the child 1's sched_counter */
     new_proc->sched_counter_addr = process->sched_counter_addr;
+    new_proc->bpoint_addr = 0;
+    new_proc->bpoint_byte = 0;
+
+    sema_init(&(new_proc->syscall_lock_sem), 1);
+
     new_proc->child_id = ++(process->monitor->child_count);
 
     pl_item = (struct process_list*) kmalloc(sizeof(struct process_list), GFP_KERNEL);
@@ -50,6 +56,8 @@ void post_clone(long *return_value, syscall_args_t *args)
 
     if (recording(process))
     {
+        new_proc->block_type = BLOCK_NONE;
+
         /* Let it run */
         VDLOG("Sending SIGCONT to child %d", new_proc->child_id);
         kill_proc(new_proc->pid, SIGCONT, 1);
@@ -65,7 +73,10 @@ void post_clone(long *return_value, syscall_args_t *args)
             DLOG("clone() system call: log file indicates child %ld being created, but child %d was created instead.",
                 entry->return_value, new_proc->child_id);
 
-        kill_proc(new_proc->pid, SIGCONT, 1);
+        /* Mark process blocked in clone */
+        new_proc->block_type = BLOCK_CLONE;
+        set_task_state(find_task_by_pid(new_proc->pid), TASK_INTERRUPTIBLE);
+
         replay_void(process);
 
         /* TODO */
