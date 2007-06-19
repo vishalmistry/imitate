@@ -45,7 +45,7 @@ extern void set_context_switch_hook(void (*csh)(struct task_struct*, struct task
 /* 
  * Breakpoint exception hook function
  */
-extern void set_int3_trap_hook(int (*seh)(struct pt_regs*, long error_code, int point));
+extern void set_int3_trap_hook(int (*seh)(struct pt_regs*, long error_code));
 
 /*
  * System call table and the backup
@@ -124,7 +124,7 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next);
 /*
  * Breakpoint exception hook prototype
  */
-int int3_trap_hook(struct pt_regs *regs, long error_code, int point);
+int int3_trap_hook(struct pt_regs *regs, long error_code);
 
 sched_log_entry_t *get_schedule_entry(void);
 int set_breakpoint_for_sched(process_t *process);
@@ -964,13 +964,11 @@ void context_switch_hook(struct task_struct *prev, struct task_struct *next)
     }
 }
 
-int int3_trap_hook(struct pt_regs *regs, long error_code, int point)
+int int3_trap_hook(struct pt_regs *regs, long error_code)
 {
     process_t *process = processes[current->pid];
 
-    if (process == NULL || point != 4) return 0;
-
-    DLOG("TRAP HOOK %lx", regs->eip);
+    if (process == NULL) return 0;
 
     /* If breakpoint was not set by us */
     if (process->bpoint_addr != (regs->eip - 1)) return 0;

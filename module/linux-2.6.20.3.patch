@@ -1,0 +1,37 @@
+diff -r a/arch/i386/kernel/traps.c b/arch/i386/kernel/traps.c
+769a770,779
+> /* IMITATE: INT3 TRAP HOOK */
+> int (*int3_trap_hook)(struct pt_regs *regs, long error_code) = NULL;
+> void set_int3_trap_hook(int (*seh)(struct pt_regs*, long))
+> {
+>     /* Set hook only if none exists or is being removed */
+>     if (!seh || ! int3_trap_hook)
+>         int3_trap_hook = seh;
+> }
+> EXPORT_SYMBOL(set_int3_trap_hook);
+> 
+777a789,795
+> 	
+> 	if (int3_trap_hook)
+>     {
+>         if (int3_trap_hook(regs, error_code) > 0)
+>             return;
+>     }
+> 
+diff -r a/kernel/sched.c b/kernel/sched.c
+1834a1835,1844
+> /* IMITATE: CONTEXT SWITCH HOOK */
+> void (*context_switch_hook)(struct task_struct *prev, struct task_struct *next) = NULL;
+> void set_context_switch_hook(void (*csh)(struct task_struct*, struct task_struct*))
+> {
+>     /* Set hook only if none exists or is being removed */
+>     if (!csh || !context_switch_hook)
+>         context_switch_hook = csh;
+> }
+> EXPORT_SYMBOL(set_context_switch_hook);
+> 
+1845a1856,1859
+>     /* IMITATE: CONTEXT SWITCH HOOK CALL */
+>     if (context_switch_hook)
+>         context_switch_hook(prev, next);
+> 
