@@ -141,6 +141,7 @@ struct process
     char bpoint_byte;
 
     struct semaphore syscall_lock_sem;
+    char block_syscall;
 
     /*
      * Storage for data between pre-/post- system call

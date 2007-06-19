@@ -25,7 +25,7 @@ int main(int argc, char *argv[], char* envp[])
     int patchall = 0; //strcmp(argv[1], "all") != 0;
 
     // Create process
-    BPatch_process *appProc = bpatch.processCreate(argv[1], (const char**) &(argv[2]));
+    BPatch_process *appProc = bpatch.processCreate(argv[1], (const char**) &(argv[1]));
 
     // Load pthread into the process...
     appProc->loadLibrary("libpthread.so.0");
@@ -400,7 +400,10 @@ int main(int argc, char *argv[], char* envp[])
         delete(loops);
     }
 
-    appProc->finalizeInsertionSet(false);    
+    fprintf(stderr, "Finalising patches...");
+    fflush(stderr);
+    appProc->finalizeInsertionSet(false);
+    fprintf(stderr, "Done.\n----------------------------------------\n");
 
     // Clear up memory used to store the name
     free(name);
@@ -441,7 +444,8 @@ int main(int argc, char *argv[], char* envp[])
     {
         bpatch.waitForStatusChange();
     }
-    
+
+    fprintf(stderr, "----------------------------------------\n");
     fprintf(stderr, "Done.\n");
     return 0;
 }

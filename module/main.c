@@ -43,9 +43,8 @@ extern long get_user_mode_instruction_pointer(struct task_struct *task);
 extern void set_context_switch_hook(void (*csh)(struct task_struct*, struct task_struct*));
 
 /* 
- * Step exception hook function
+ * Breakpoint exception hook function
  */
-extern void set_step_exception_hook(int (*seh)(struct pt_regs*, int point));
 extern void set_int3_trap_hook(int (*seh)(struct pt_regs*, long error_code, int point));
 
 /*
@@ -123,9 +122,8 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
 void context_switch_hook(struct task_struct *prev, struct task_struct *next);
 
 /*
- * Step exception hook prototype
+ * Breakpoint exception hook prototype
  */
-int step_exception_hook(struct pt_regs *regs, int point);
 int int3_trap_hook(struct pt_regs *regs, long error_code, int point);
 
 sched_log_entry_t *get_schedule_entry(void);
@@ -255,9 +253,8 @@ static int __init kmod_init(void)
     DLOG("Installing context switch hook");
     set_context_switch_hook(context_switch_hook);
 
-    /* Set up step exception hook */
-    DLOG("Installing step exception hook");
-    set_step_exception_hook(step_exception_hook);
+    /* Set up breakpoint exception hook */
+    DLOG("Installing breakpoint exception hook");
     set_int3_trap_hook(int3_trap_hook);
 
     LOG("Loaded " MODULE_NAME " kernel module");
@@ -295,7 +292,6 @@ static void __exit kmod_exit(void)
     DLOG("Unloading " MODULE_NAME " module");
 
     set_context_switch_hook(NULL);
-    set_step_exception_hook(NULL);
     set_int3_trap_hook(NULL);
 
     /* Clean up memory (just in case anything is left over) */
@@ -592,6 +588,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->block_type = BLOCK_NONE;
             process->bpoint_addr = 0;
             process->bpoint_byte = 0;
+            process->block_syscall = 0;
 
             process->monitor->last_running_thread = current;
 
@@ -627,6 +624,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
             process->block_type = BLOCK_NONE;
             process->bpoint_addr = 0;
             process->bpoint_byte = 0;
+            process->block_syscall = 0;
 
             sema_init(&(process->syscall_lock_sem), 1);
 
@@ -732,7 +730,7 @@ static int cdev_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, 
                 result = -EFAULT;
             break;
 
-        case IMITATE_START_STEP:
+        case IMITATE_SET_BPOINT:
             process = processes[current->pid];
 
             if (process != NULL && process->mode == MODE_REPLAY)
@@ -806,6 +804,8 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
     {
         VVDLOG("Entered pre_syscall_callback() - syscall_no: %ld", syscall_no);
 
+        sema_init(&(process->syscall_lock_sem), process->block_syscall == 1 ? 0 : 1);
+
         VVDLOG("Dispatching pre_syscall_callback handler for call %ld", syscall_no);
         process->replay_syscall = 0;
         ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
@@ -817,6 +817,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
         if ((process->mode == MODE_REPLAY) && (process->replay_syscall))
         {
             VVDLOG("Replaying call return value for call %ld", syscall_no);
+            down(&(process->syscall_lock_sem));
             return &(process->syscall_replay_value);
         }
 
@@ -836,6 +837,8 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
         ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(
             &syscall_return_value,
             &syscall_args);
+
+        down(&(process->syscall_lock_sem));
         VVDLOG("Returned from post_syscall_callback handler for call %d", process->last_syscall_no);
     }
 
@@ -1015,27 +1018,8 @@ int set_breakpoint_for_sched(process_t *process)
     else
     {
         DLOG("Context switch in kernel within system call. Preventing user-space reentry");
-        if (down_interruptible(&(process->syscall_lock_sem)))
-            return -EINTR;
-
+        process->block_syscall = 1;
+        schedule_next_child();
         return 0;
     }
-}
-
-int step_exception_hook(struct pt_regs* regs, int point)
-{
-    process_t *process = processes[current->pid];
-
-    if (point == 1) return 1; else return 0;
-
-    DLOG("RECEIVED STEP: %lx", regs->eip);
-
-    if (process != NULL && process->mode == MODE_REPLAY)
-    {
-        clear_tsk_thread_flag(current, TIF_SINGLESTEP);
-        DLOG("RECEIVED STEP: %lx", regs->eip);
-
-        return 1;
-    }
-    return 0;
 }

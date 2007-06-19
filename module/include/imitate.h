@@ -30,7 +30,7 @@
 /* Notify driver of initial buffer sizes during replay */
 #define IMITATE_PREP_REPLAY _IOR(IMITATE_IOC_MAGIC, 5, prep_replay_t)
 /* Ask driver to set breakpoint */
-#define IMITATE_START_STEP _IOR(IMITATE_IOC_MAGIC, 6, int)
+#define IMITATE_SET_BPOINT _IOR(IMITATE_IOC_MAGIC, 6, int)
 
 #define NO_DATA         0x0
 #define SYSCALL_DATA    0x1

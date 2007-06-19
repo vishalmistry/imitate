@@ -94,12 +94,14 @@ void fill_syscall_buffer(FILE* syscall_log_file, char* syscall_log, callback_t *
             }
             else        /* Read succeeded */
             {
-/*                printf("child: %d, call_no: %d, return_value: %d, out_param_len: %d\n",
+#if 0
+                printf("child: %d, call_no: %d, return_value: %d, out_param_len: %d\n",
                     syscall_log_entry->child_id,
                     syscall_log_entry->call_no,
                     syscall_log_entry->return_value,
                     syscall_log_entry->out_param_len);
-*/
+#endif
+
                 /* Read out_param if necessary */
                 if (syscall_log_entry->out_param_len > 0)
                 {
@@ -314,7 +316,7 @@ int main(int argc, char* argv[])
     }
     else if (app_pid == 0) /* Child */
     {
-        prog_args[0] = malloc(strlen("./patcher"));
+        prog_args[0] = malloc(strlen("./patcher")+1);
         strcpy(prog_args[0], "./patcher");
 
         if (execve(prog_args[0], prog_args, prog_env) < 0)

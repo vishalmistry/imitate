@@ -6,9 +6,9 @@ void* thread(void *tid)
 {
     int ttid = *((int*) tid), i;
     printf("Thread %d - PID %d - TID: %d\n", ttid, getpid(), pthread_self());
-    for (i = 0; i < 50000000; i++)
+    for (i = 0; i < 500000; i++)
     {
-        if ((i % 5000000) == 0)
+        if ((i % 50000) == 0)
             printf("%d -> counter = %d\n", ttid, i);
     }
 }
