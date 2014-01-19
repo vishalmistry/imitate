@@ -1,6 +1,6 @@
 export CFLAGS=-fno-stack-protector $CFLAGS
 export CPPFLAGS=-fno-stack-protector $CPPFLAGS
 export PLATFORM=i386-unknown-linux2.4
-export DYNINST_ROOT=/home/vishal/Work/University/Year4/IndividualProject/src/lib/dyninst-5.0.1
+export DYNINST_ROOT=/home/$USER/imitate/lib/dyninst-5.0.1
 export DYNINSTAPI_RT_LIB=$DYNINST_ROOT/$PLATFORM/lib/libdyninstAPI_RT.so.1
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$DYNINST_ROOT/$PLATFORM/lib
