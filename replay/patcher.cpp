@@ -435,7 +435,10 @@ int main(int argc, char *argv[], char* envp[])
         delete(loops);
     }
 
-    appProc->finalizeInsertionSet(false);    
+    fprintf(stderr, "Finalising patches...");
+    fflush(stderr);
+    appProc->finalizeInsertionSet(false);
+    fprintf(stderr, "Done.\n----------------------------------------\n");
 
     // Clear up memory used to store the name
     free(name);
@@ -477,6 +480,7 @@ int main(int argc, char *argv[], char* envp[])
         bpatch.waitForStatusChange();
     }
     
+    fprintf(stderr, "----------------------------------------\n");
     fprintf(stderr, "Done.\n");
     return 0;
 }

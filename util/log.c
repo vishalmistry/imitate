@@ -50,7 +50,7 @@ int read_string_array_from_file_resize(char*** arr, FILE* filp, int increase_siz
     if (! *arr)
         return -2;
 
-    (*arr)[arr_size] = NULL;
+    (*arr)[arr_size+increase_size] = NULL;
     for (i = offset; i < arr_size + offset; i++)
     {
         read_count = fread(&str_size, sizeof(str_size), 1, filp);
