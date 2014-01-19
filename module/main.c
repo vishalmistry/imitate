@@ -22,7 +22,7 @@
 /*
  * Module information
  */
-MODULE_AUTHOR("Vishal Mistry <vishal@digitalsilver.org>");
+MODULE_AUTHOR("Vishal Mistry <vishal@vishalmistry.com>");
 MODULE_DESCRIPTION("Kernel portion of the Imitate record/replay framework");
 MODULE_LICENSE("GPL");
 
@@ -52,8 +52,8 @@ extern void set_int3_trap_hook(int (*seh)(struct pt_regs*, long error_code));
  */
 syscall_t original_sys_call_table[NR_syscalls];
 static syscall_t *sys_call_table;
-void* pre_syscall_callbacks[NR_syscalls];
-void* post_syscall_callbacks[NR_syscalls];
+void* pre_syscall_handlers[NR_syscalls];
+void* post_syscall_handlers[NR_syscalls];
 
 /*
  * Process list
@@ -129,7 +129,7 @@ int int3_trap_hook(struct pt_regs *regs, long error_code);
 sched_log_entry_t *get_schedule_entry(void);
 int set_breakpoint_for_sched(process_t *process);
 
-asmlinkage void empty_callback(void)
+asmlinkage void empty_handler(void)
 {
 }
 
@@ -181,54 +181,40 @@ static int __init kmod_init(void)
 
     DLOG("Reserved major number %d for device", MAJOR(dev));
 
-    /* Save current system call handlers */
+    /* Save current system call handlers and set intercept */
     DLOG("Saving system call table");
     for (i = 0; i < NR_syscalls; i++)
     {
         original_sys_call_table[i] = sys_call_table[i];
-        pre_syscall_callbacks[i] = empty_callback;
-        post_syscall_callbacks[i] = empty_callback;
+        pre_syscall_handlers[i] = empty_handler;
+        post_syscall_handlers[i] = empty_handler;
+        sys_call_table[i] = syscall_intercept;
     }
 
-    /* Hook the system call intercepts */
-    DLOG("Attaching system call intercepts");
-    sys_call_table[__NR_open] = syscall_intercept;
-    sys_call_table[__NR_read] = syscall_intercept;
-    sys_call_table[__NR_close] = syscall_intercept;
-    sys_call_table[__NR_mmap2] = syscall_intercept;
-    sys_call_table[__NR_exit_group] = syscall_intercept;
-    sys_call_table[__NR_clock_gettime] = syscall_intercept;
-    sys_call_table[__NR_getdents64] = syscall_intercept;
-    sys_call_table[__NR_fstat64] = syscall_intercept;
-    sys_call_table[__NR_lstat64] = syscall_intercept;
-    sys_call_table[__NR_getxattr] = syscall_intercept;
-    sys_call_table[__NR_clone] = syscall_intercept;
-    sys_call_table[__NR_execve] = syscall_intercept;
+    pre_syscall_handlers[__NR_open] = pre_open;
+    pre_syscall_handlers[__NR_read] = pre_read;
+    pre_syscall_handlers[__NR_close] = pre_close;
+    pre_syscall_handlers[__NR_mmap2] = pre_mmap2;
+    pre_syscall_handlers[__NR_exit_group] = pre_exit_group;
+    pre_syscall_handlers[__NR_clock_gettime] = pre_clock_gettime;
+    pre_syscall_handlers[__NR_getdents64] = pre_getdents64;
+    pre_syscall_handlers[__NR_fstat64] = pre_fstat64;
+    pre_syscall_handlers[__NR_lstat64] = pre_lstat64;
+    pre_syscall_handlers[__NR_getxattr] = pre_getxattr;
+    pre_syscall_handlers[__NR_clone] = pre_clone;
+    pre_syscall_handlers[__NR_execve] = pre_execve;
 
-    pre_syscall_callbacks[__NR_open] = pre_open;
-    pre_syscall_callbacks[__NR_read] = pre_read;
-    pre_syscall_callbacks[__NR_close] = pre_close;
-    pre_syscall_callbacks[__NR_mmap2] = pre_mmap2;
-    pre_syscall_callbacks[__NR_exit_group] = pre_exit_group;
-    pre_syscall_callbacks[__NR_clock_gettime] = pre_clock_gettime;
-    pre_syscall_callbacks[__NR_getdents64] = pre_getdents64;
-    pre_syscall_callbacks[__NR_fstat64] = pre_fstat64;
-    pre_syscall_callbacks[__NR_lstat64] = pre_lstat64;
-    pre_syscall_callbacks[__NR_getxattr] = pre_getxattr;
-    pre_syscall_callbacks[__NR_clone] = pre_clone;
-    pre_syscall_callbacks[__NR_execve] = pre_execve;
-
-    post_syscall_callbacks[__NR_open] = post_open;
-    post_syscall_callbacks[__NR_read] = post_read;
-    post_syscall_callbacks[__NR_close] = post_close;
-    post_syscall_callbacks[__NR_mmap2] = post_mmap2;
-    post_syscall_callbacks[__NR_clock_gettime] = post_clock_gettime;
-    post_syscall_callbacks[__NR_getdents64] = post_getdents64;
-    post_syscall_callbacks[__NR_fstat64] = post_fstat64;
-    post_syscall_callbacks[__NR_lstat64] = post_lstat64;
-    post_syscall_callbacks[__NR_getxattr] = post_getxattr;
-    post_syscall_callbacks[__NR_clone] = post_clone;
-    post_syscall_callbacks[__NR_execve] = post_execve;
+    post_syscall_handlers[__NR_open] = post_open;
+    post_syscall_handlers[__NR_read] = post_read;
+    post_syscall_handlers[__NR_close] = post_close;
+    post_syscall_handlers[__NR_mmap2] = post_mmap2;
+    post_syscall_handlers[__NR_clock_gettime] = post_clock_gettime;
+    post_syscall_handlers[__NR_getdents64] = post_getdents64;
+    post_syscall_handlers[__NR_fstat64] = post_fstat64;
+    post_syscall_handlers[__NR_lstat64] = post_lstat64;
+    post_syscall_handlers[__NR_getxattr] = post_getxattr;
+    post_syscall_handlers[__NR_clone] = post_clone;
+    post_syscall_handlers[__NR_execve] = post_execve;
 
     /* Set up the character device */
     DLOG("Registering character device");
@@ -808,7 +794,7 @@ asmlinkage long *pre_syscall_callback(long syscall_no, unsigned long syscall_ret
 
         VVDLOG("Dispatching pre_syscall_callback handler for call %ld", syscall_no);
         process->replay_syscall = 0;
-        ((pre_syscall_callback_t) pre_syscall_callbacks[syscall_no])(
+        ((pre_syscall_callback_t) pre_syscall_handlers[syscall_no])(
             &syscall_args);
         VVDLOG("Returned from pre_syscall_callback handler for call %ld", syscall_no);
 
@@ -834,7 +820,7 @@ asmlinkage unsigned long post_syscall_callback(long syscall_return_value, unsign
     if (process != NULL && process->mode >= MODE_RECORD)
     {
         VVDLOG("Dispatching post_syscall_callback handler for call %d", process->last_syscall_no);
-        ((post_syscall_callback_t) post_syscall_callbacks[process->last_syscall_no])(
+        ((post_syscall_callback_t) post_syscall_handlers[process->last_syscall_no])(
             &syscall_return_value,
             &syscall_args);
 
